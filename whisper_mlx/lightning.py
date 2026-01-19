@@ -1,6 +1,11 @@
 # Copyright © 2024 Mustafa Aljadery & Siddharth Sharma
 # Simple API wrapper for quick transcription
 
+from typing import Any, Dict, Optional, Union
+
+import mlx.core as mx
+import numpy as np
+
 from .transcribe import transcribe as transcribe_audio
 from .utils import MODEL_REPOS, QUANT_REPOS, resolve_model_path
 
@@ -9,18 +14,31 @@ class LightningWhisperMLX:
     """
     Simple API wrapper for Whisper MLX transcription.
 
+    This is a thin wrapper around transcribe() that provides:
+    - Friendly model names (e.g., "turbo" instead of "mlx-community/whisper-turbo")
+    - Quantization support via the quant parameter
+    - All transcribe() parameters are supported via **kwargs
+
     Example usage:
         whisper = LightningWhisperMLX(model="distil-large-v3", batch_size=12)
         result = whisper.transcribe("audio.mp3")
         print(result["text"])
+
+        # All transcribe() options work:
+        result = whisper.transcribe(
+            "audio.mp3",
+            word_timestamps=True,
+            condition_on_previous_text=False,
+            compression_ratio_threshold=2.0,
+        )
     """
 
     def __init__(
         self,
         model: str = "distil-large-v3",
         batch_size: int = 12,
-        quant: str = None,
-    ):
+        quant: Optional[str] = None,
+    ) -> None:
         """
         Initialize the LightningWhisperMLX transcriber.
 
@@ -50,20 +68,23 @@ class LightningWhisperMLX:
 
     def transcribe(
         self,
-        audio_path: str,
-        language: str = None,
+        audio: Union[str, np.ndarray, mx.array],
+        language: Optional[str] = None,
         task: str = "transcribe",
-        verbose: bool = False,
+        verbose: Optional[bool] = None,
         word_timestamps: bool = False,
-        **kwargs,
-    ) -> dict:
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
         """
         Transcribe an audio file.
 
+        This is a thin wrapper around transcribe() - all parameters from
+        transcribe() are supported via **kwargs.
+
         Parameters
         ----------
-        audio_path : str
-            Path to the audio file to transcribe.
+        audio : str | np.ndarray | mx.array
+            Path to the audio file or audio waveform array.
 
         language : str, optional
             Language code (e.g., "en", "es", "fr"). If None, auto-detects.
@@ -71,14 +92,18 @@ class LightningWhisperMLX:
         task : str
             "transcribe" for speech recognition or "translate" for translation to English.
 
-        verbose : bool
+        verbose : bool, optional
             Whether to print progress during transcription.
 
         word_timestamps : bool
             Whether to include word-level timestamps.
 
         **kwargs
-            Additional arguments passed to the transcribe function.
+            All transcribe() parameters are supported:
+            - temperature, compression_ratio_threshold, logprob_threshold
+            - no_speech_threshold, condition_on_previous_text, initial_prompt
+            - prepend_punctuations, append_punctuations, clip_timestamps
+            - hallucination_silence_threshold, fp16, beam_size, patience, etc.
 
         Returns
         -------
@@ -88,8 +113,8 @@ class LightningWhisperMLX:
             - "segments": List of segment dictionaries with timestamps
             - "language": Detected or specified language
         """
-        result = transcribe_audio(
-            audio_path,
+        return transcribe_audio(
+            audio,
             path_or_hf_repo=self.model_path,
             batch_size=self.batch_size,
             language=language,
@@ -98,7 +123,6 @@ class LightningWhisperMLX:
             word_timestamps=word_timestamps,
             **kwargs,
         )
-        return result
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"LightningWhisperMLX(model='{self.name}', batch_size={self.batch_size}, quant={self.quant})"

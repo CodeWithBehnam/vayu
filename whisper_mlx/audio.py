@@ -3,7 +3,7 @@
 import os
 from functools import lru_cache
 from subprocess import CalledProcessError, run
-from typing import Optional, Union
+from typing import List, Optional, Tuple, Union
 
 import mlx.core as mx
 import numpy as np
@@ -21,7 +21,7 @@ FRAMES_PER_SECOND = SAMPLE_RATE // HOP_LENGTH  # 10ms per audio frame
 TOKENS_PER_SECOND = SAMPLE_RATE // N_SAMPLES_PER_TOKEN  # 20ms per audio token
 
 
-def load_audio(file: str = Optional[str], sr: int = SAMPLE_RATE, from_stdin=False):
+def load_audio(file: Optional[str] = None, sr: int = SAMPLE_RATE, from_stdin: bool = False) -> mx.array:
     """
     Open an audio file and read as mono waveform, resampling as necessary
 
@@ -66,7 +66,7 @@ def load_audio(file: str = Optional[str], sr: int = SAMPLE_RATE, from_stdin=Fals
     return mx.array(np.frombuffer(out, np.int16)).flatten().astype(mx.float32) / 32768.0
 
 
-def pad_or_trim(array, length: int = N_SAMPLES, *, axis: int = -1):
+def pad_or_trim(array: mx.array, length: int = N_SAMPLES, *, axis: int = -1) -> mx.array:
     """
     Pad or trim the audio array to N_SAMPLES, as expected by the encoder.
     """
@@ -102,11 +102,19 @@ def mel_filters(n_mels: int) -> mx.array:
 
 
 @lru_cache(maxsize=None)
-def hanning(size):
+def hanning(size: int) -> mx.array:
     return mx.array(np.hanning(size + 1)[:-1])
 
 
-def stft(x, window, nperseg=256, noverlap=None, nfft=None, axis=-1, pad_mode="reflect"):
+def stft(
+    x: mx.array,
+    window: mx.array,
+    nperseg: int = 256,
+    noverlap: Optional[int] = None,
+    nfft: Optional[int] = None,
+    axis: int = -1,
+    pad_mode: str = "reflect",
+) -> mx.array:
     if nfft is None:
         nfft = nperseg
     if noverlap is None:
@@ -133,10 +141,10 @@ def stft(x, window, nperseg=256, noverlap=None, nfft=None, axis=-1, pad_mode="re
 
 
 def log_mel_spectrogram(
-    audio: Union[str, np.ndarray],
+    audio: Union[str, np.ndarray, mx.array],
     n_mels: int = 80,
     padding: int = 0,
-):
+) -> mx.array:
     """
     Compute the log-Mel spectrogram of
 

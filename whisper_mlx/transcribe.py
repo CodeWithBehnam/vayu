@@ -2,7 +2,7 @@
 
 import sys
 import warnings
-from typing import List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import mlx.core as mx
 import numpy as np
@@ -16,6 +16,12 @@ from .audio import (
     SAMPLE_RATE,
     log_mel_spectrogram,
     pad_or_trim,
+)
+from .constants import (
+    COMPRESSION_RATIO_THRESHOLD,
+    LOGPROB_THRESHOLD,
+    NO_SPEECH_THRESHOLD,
+    TEMPERATURE_SCHEDULE,
 )
 from .decoding import DecodingOptions, DecodingResult
 from .load_models import ModelHolder
@@ -37,10 +43,10 @@ def transcribe(
     path_or_hf_repo: str = "mlx-community/whisper-turbo",
     batch_size: int = 1,
     verbose: Optional[bool] = None,
-    temperature: Union[float, Tuple[float, ...]] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
-    compression_ratio_threshold: Optional[float] = 2.4,
-    logprob_threshold: Optional[float] = -1.0,
-    no_speech_threshold: Optional[float] = 0.6,
+    temperature: Union[float, Tuple[float, ...]] = TEMPERATURE_SCHEDULE,
+    compression_ratio_threshold: Optional[float] = COMPRESSION_RATIO_THRESHOLD,
+    logprob_threshold: Optional[float] = LOGPROB_THRESHOLD,
+    no_speech_threshold: Optional[float] = NO_SPEECH_THRESHOLD,
     condition_on_previous_text: bool = True,
     initial_prompt: Optional[str] = None,
     word_timestamps: bool = False,
@@ -48,8 +54,8 @@ def transcribe(
     append_punctuations: str = "\"'.\u3002,\uff0c!\uff01?\uff1f:\uff1a\")\u300d]}\u3001",
     clip_timestamps: Union[str, List[float]] = "0",
     hallucination_silence_threshold: Optional[float] = None,
-    **decode_options,
-):
+    **decode_options: Any,
+) -> Dict[str, Any]:
     """
     Transcribe an audio file using Whisper
 

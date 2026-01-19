@@ -35,6 +35,7 @@ import mlx.core as mx
 import numpy as np
 
 from .audio import N_FRAMES, log_mel_spectrogram, pad_or_trim
+from .constants import DEFAULT_DRAFT_TOKENS, MAX_TOKENS_PER_SEGMENT
 from .load_models import load_model
 from .tokenizer import get_tokenizer
 
@@ -53,7 +54,7 @@ class SpeculativeDecoder:
         self,
         draft_model_path: str = "mlx-community/whisper-tiny-mlx",
         target_model_path: str = "mlx-community/whisper-large-v3-mlx",
-        num_draft_tokens: int = 5,
+        num_draft_tokens: int = DEFAULT_DRAFT_TOKENS,
         dtype: mx.Dtype = mx.float16,
     ):
         """
@@ -160,7 +161,7 @@ class SpeculativeDecoder:
             self.tokenizer.special_tokens["<|notimestamps|>"],
         ]
 
-        max_tokens = 224  # Max tokens per segment
+        max_tokens = MAX_TOKENS_PER_SEGMENT
 
         while len(tokens) < max_tokens:
             # Draft tokens
