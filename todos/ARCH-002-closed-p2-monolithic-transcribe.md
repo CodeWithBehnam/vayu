@@ -1,9 +1,10 @@
 ---
-status: pending
+status: closed
 priority: p2
 issue_id: ARCH-002
 tags: [architecture, refactoring, code-organization]
 dependencies: []
+resolution: deferred
 ---
 
 # Monolithic transcribe() Function (670+ Lines)
@@ -83,3 +84,28 @@ def transcribe(audio, **options):
 2. Add unit tests for each extracted component
 3. Integration test after each extraction
 4. Verify output matches original implementation
+
+## Assessment (2026-01-19)
+
+**Scope Analysis:**
+- File is 723 lines, with `transcribe()` spanning lines 34-723
+- Contains 3 nested helper functions with tight coupling to local state:
+  - `decode_with_fallback()` - needs model, decode_options, thresholds
+  - `decode_batch_with_fallback()` - same dependencies
+  - `new_segment()` - needs tokenizer, seek variable
+- Main loop has complex state management (seek, tokens, segments)
+
+**Challenges:**
+1. Nested functions access closure variables (model, tokenizer, decode_options)
+2. Extracting would require passing 5+ parameters to each helper
+3. No existing test suite to validate behavior preservation
+4. Changes could introduce subtle bugs in timestamp/segment handling
+
+**Recommendation:**
+- Deferred for dedicated refactoring effort with:
+  1. Create comprehensive test suite first
+  2. Extract one component at a time
+  3. Consider class-based TranscriptionPipeline approach
+  4. Plan for 2-3 days of focused work
+
+**Resolution:** Deferred - requires dedicated planning, tests, and implementation time.
