@@ -2,7 +2,16 @@
 
 Fast Whisper speech recognition on Apple Silicon with batched decoding.
 
-This is a unified implementation combining:
+## Acknowledgments
+
+This project builds upon the excellent work of others. We are grateful to:
+
+- **[Apple MLX Team](https://github.com/ml-explore/mlx-examples)** - For the MLX framework and the original Whisper MLX implementation with CLI support, output writers, and numerical stability improvements
+- **[Mustafa Aljadery](https://github.com/mustafaaljadery/lightning-whisper-mlx)** - For the lightning-fast batched decoding implementation that significantly improves throughput
+- **[Siddharth Sharma](https://github.com/mustafaaljadery/lightning-whisper-mlx)** - Co-author of lightning-whisper-mlx
+- **[OpenAI](https://github.com/openai/whisper)** - For creating the original Whisper model and making it open source
+
+This unified implementation combines the best of both worlds:
 - **ml-explore/mlx-examples/whisper** - Newer APIs, CLI support, output writers, numerical stability
 - **lightning-whisper-mlx** - Batched decoding for higher throughput
 
@@ -177,8 +186,18 @@ class LightningWhisperMLX:
 
 MIT License - see LICENSE file for details.
 
+## Author
+
+**Behnam Ebrahimi** - Unified implementation, security improvements, and maintenance
+
 ## Credits
 
-- [ml-explore/mlx-examples](https://github.com/ml-explore/mlx-examples) - MLX Whisper implementation
-- [mustafaaljadery/lightning-whisper-mlx](https://github.com/mustafaaljadery/lightning-whisper-mlx) - Batched decoding
-- [OpenAI Whisper](https://github.com/openai/whisper) - Original Whisper model
+This project would not be possible without:
+
+| Project | Author(s) | Contribution |
+|---------|-----------|--------------|
+| [mlx-examples/whisper](https://github.com/ml-explore/mlx-examples) | Apple Inc. | MLX framework, Whisper port, CLI, output writers |
+| [lightning-whisper-mlx](https://github.com/mustafaaljadery/lightning-whisper-mlx) | Mustafa Aljadery, Siddharth Sharma | Batched decoding for 3-5x speedup |
+| [Whisper](https://github.com/openai/whisper) | OpenAI | Original model architecture and weights |
+
+Thank you to all contributors who make open source AI accessible and fast on Apple Silicon.
