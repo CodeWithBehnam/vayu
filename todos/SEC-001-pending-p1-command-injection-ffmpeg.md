@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 priority: p1
 issue_id: SEC-001
 tags: [security, high-severity, command-injection]

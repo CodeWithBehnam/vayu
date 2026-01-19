@@ -43,6 +43,9 @@ def load_audio(file: str = Optional[str], sr: int = SAMPLE_RATE, from_stdin=Fals
     if from_stdin:
         cmd = ["ffmpeg", "-i", "pipe:0"]
     else:
+        if not os.path.isfile(file):
+            raise ValueError(f"Audio file not found: {file}")
+        file = os.path.realpath(file)
         cmd = ["ffmpeg", "-nostdin", "-i", file]
 
     # fmt: off
