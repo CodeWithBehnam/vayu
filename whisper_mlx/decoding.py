@@ -9,6 +9,7 @@ import numpy as np
 from mlx.utils import tree_map
 
 from .audio import CHUNK_LENGTH
+from .constants import LENGTH_PENALTY_BASE, LENGTH_PENALTY_DIVISOR
 from .tokenizer import Tokenizer, get_tokenizer
 
 if TYPE_CHECKING:
@@ -182,7 +183,7 @@ class MaximumLikelihoodRanker(SequenceRanker):
                     penalty = length
                 else:
                     # from the Google NMT paper
-                    penalty = ((5 + length) / 6) ** self.length_penalty
+                    penalty = ((LENGTH_PENALTY_BASE + length) / LENGTH_PENALTY_DIVISOR) ** self.length_penalty
                 result.append(logprob / penalty)
             return result
 

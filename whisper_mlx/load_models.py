@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Optional
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -59,11 +60,11 @@ def load_model(
 class ModelHolder:
     """Singleton cache for loaded Whisper models."""
 
-    model = None
-    model_path = None
+    model: Optional[whisper.Whisper] = None
+    model_path: Optional[str] = None
 
     @classmethod
-    def get_model(cls, model_path: str, dtype: mx.Dtype):
+    def get_model(cls, model_path: str, dtype: mx.Dtype) -> whisper.Whisper:
         """Get a cached model or load a new one."""
         if cls.model is None or model_path != cls.model_path:
             cls.model = load_model(model_path, dtype=dtype)

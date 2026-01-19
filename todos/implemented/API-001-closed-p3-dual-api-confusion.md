@@ -1,9 +1,10 @@
 ---
-status: pending
+status: closed
 priority: p3
 issue_id: API-001
 tags: [api-design, documentation, usability]
 dependencies: []
+resolution: implemented
 ---
 
 # Dual API Confusion Between transcribe() and LightningWhisperMLX
