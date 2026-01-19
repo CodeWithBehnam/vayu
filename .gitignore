@@ -1,0 +1,32 @@
+# Folders
+gitingest/
+images/
+todos/
+.venv/
+.claude/
+notebooks/
+data/
+
+# Build artifacts
+*.egg-info/
+__pycache__/
+*.pyc
+dist/
+build/
+
+# Large/media files
+*.mp4
+*.mp3
+*.wav
+*.png
+*.jpg
+*.jpeg
+!assets/*.png
+!assets/*.jpg
+
+# Notebooks and benchmarks
+*.ipynb
+benchmark_*.py
+
+# Text dumps
+*-mlx-*.txt
