@@ -12,6 +12,7 @@ authors = [
     {name = "Apple Inc."},
     {name = "Mustafa Aljadery"},
     {name = "Siddharth Sharma"},
+    {name = "Behnam Ebrahimi"},
 ]
 keywords = [
     "whisper",
@@ -90,4 +91,5 @@ dev = [
     "ipywidgets>=8.1.8",
     "matplotlib>=3.10.8",
     "psutil>=7.2.1",
+    "pytest>=9.0.2",
 ]
