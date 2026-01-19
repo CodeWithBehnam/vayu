@@ -147,6 +147,25 @@ def transcribe(
     A dictionary containing the resulting text ("text") and segment-level details ("segments"), and
     the spoken language ("language"), which is detected when `decode_options["language"]` is None.
     """
+    # Validate inputs
+    if batch_size < 1:
+        raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+    if batch_size > 64:
+        warnings.warn(
+            f"batch_size={batch_size} may cause out-of-memory errors. "
+            "Consider using batch_size <= 64."
+        )
+
+    if isinstance(audio, str):
+        if not audio:
+            raise ValueError("Audio path cannot be empty")
+    elif isinstance(audio, (np.ndarray, mx.array)):
+        if audio.size == 0:
+            raise ValueError("Audio array cannot be empty")
+    else:
+        raise TypeError(
+            f"audio must be a file path (str) or array, got {type(audio).__name__}"
+        )
 
     dtype = mx.float16 if decode_options.get("fp16", True) else mx.float32
     model = ModelHolder.get_model(path_or_hf_repo, dtype)

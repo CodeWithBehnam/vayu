@@ -1,9 +1,10 @@
 ---
-status: pending
+status: closed
 priority: p2
 issue_id: ERR-001
 tags: [error-handling, validation, robustness]
 dependencies: []
+resolution: fixed
 ---
 
 # Missing Input Validation Across Functions

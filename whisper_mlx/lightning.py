@@ -87,6 +87,9 @@ class LightningWhisperMLX:
         quant : str, optional
             Quantization level: "4bit" or "8bit". Only supported for some models.
         """
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}")
+
         self.batch_size = batch_size
         self.quant = quant
         self.name = model
