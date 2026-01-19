@@ -6,6 +6,7 @@ todos/
 .claude/
 notebooks/
 tests/__pycache__/
+data/
 
 # Large files
 *.mp4
