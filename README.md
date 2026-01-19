@@ -1,5 +1,12 @@
 # Whisper MLX
 
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos/)
+[![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1%2FM2%2FM3%2FM4-orange.svg)](https://support.apple.com/en-us/HT211814)
+[![MLX](https://img.shields.io/badge/MLX-0.11+-purple.svg)](https://github.com/ml-explore/mlx)
+[![Version](https://img.shields.io/badge/version-0.5.0-brightgreen.svg)](https://github.com/ml-explore/mlx-examples)
+
 Fast Whisper speech recognition on Apple Silicon with batched decoding.
 
 ## Acknowledgments
