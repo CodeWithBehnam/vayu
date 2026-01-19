@@ -1,0 +1,4656 @@
+Directory structure:
+└── whisper/
+    ├── README.md
+    ├── benchmark.py
+    ├── convert.py
+    ├── MANIFEST.in
+    ├── setup.py
+    ├── test.py
+    └── mlx_whisper/
+        ├── __init__.py
+        ├── _version.py
+        ├── audio.py
+        ├── cli.py
+        ├── decoding.py
+        ├── load_models.py
+        ├── requirements.txt
+        ├── timing.py
+        ├── tokenizer.py
+        ├── torch_whisper.py
+        ├── transcribe.py
+        ├── whisper.py
+        ├── writers.py
+        └── assets/
+            ├── download_alice.sh
+            └── mel_filters.npz
+
+================================================
+FILE: whisper/README.md
+================================================
+# Whisper
+
+Speech recognition with Whisper in MLX. Whisper is a set of open source speech
+recognition models from OpenAI, ranging from 39 million to 1.5 billion
+parameters.[^1]
+
+### Setup
+
+Install [`ffmpeg`](https://ffmpeg.org/):
+
+```
+# on macOS using Homebrew (https://brew.sh/)
+brew install ffmpeg
+```
+
+Install the `mlx-whisper` package with:
+
+```
+pip install mlx-whisper
+```
+
+### Run
+
+#### CLI
+
+At its simplest:
+
+```sh
+mlx_whisper audio_file.mp3
+```
+
+This will make a text file `audio_file.txt` with the results.
+
+Use `-f` to specify the output format and `--model` to specify the model. There
+are many other supported command line options. To see them all, run
+`mlx_whisper -h`.
+
+You can also pipe the audio content of other programs via stdin:
+
+```sh
+some-process | mlx_whisper -
+```
+
+The default output file name will be `content.*`. You can specify the name with
+the `--output-name` flag.
+
+#### API
+
+Transcribe audio with:
+
+```python
+import mlx_whisper
+
+text = mlx_whisper.transcribe(speech_file)["text"]
+```
+
+The default model is "mlx-community/whisper-tiny". Choose the model by
+setting `path_or_hf_repo`. For example:
+
+```python
+result = mlx_whisper.transcribe(speech_file, path_or_hf_repo="models/large")
+```
+
+This will load the model contained in `models/large`. The `path_or_hf_repo` can
+also point to an MLX-style Whisper model on the Hugging Face Hub. In this case,
+the model will be automatically downloaded. A [collection of pre-converted
+Whisper
+models](https://huggingface.co/collections/mlx-community/whisper-663256f9964fbb1177db93dc)
+are in the Hugging Face MLX Community.
+
+The `transcribe` function also supports word-level timestamps. You can generate
+these with:
+
+```python
+output = mlx_whisper.transcribe(speech_file, word_timestamps=True)
+print(output["segments"][0]["words"])
+```
+
+To see more transcription options use:
+
+```
+>>> help(mlx_whisper.transcribe)
+```
+
+### Converting models
+
+> [!TIP]
+> Skip the conversion step by using pre-converted checkpoints from the Hugging
+> Face Hub. There are a few available in the [MLX
+> Community](https://huggingface.co/mlx-community) organization.
+
+To convert a model, first clone the MLX Examples repo:
+
+```
+git clone https://github.com/ml-explore/mlx-examples.git
+```
+
+Then run `convert.py` from `mlx-examples/whisper`. For example, to convert the
+`tiny` model use:
+
+```
+python convert.py --torch-name-or-path tiny --mlx-path mlx_models/tiny
+```
+
+Note you can also convert a local PyTorch checkpoint which is in the original
+OpenAI format.
+
+To generate a 4-bit quantized model, use `-q`. For a full list of options:
+
+```
+python convert.py --help
+```
+
+By default, the conversion script will make the directory `mlx_models`
+and save the converted `weights.npz` and `config.json` there.
+
+Each time it is run, `convert.py` will overwrite any model in the provided
+path. To save different models, make sure to set `--mlx-path` to a unique
+directory for each converted model. For example:
+
+```bash
+model="tiny"
+python convert.py --torch-name-or-path ${model} --mlx-path mlx_models/${model}_fp16
+python convert.py --torch-name-or-path ${model} --dtype float32 --mlx-path mlx_models/${model}_fp32
+python convert.py --torch-name-or-path ${model} -q --q_bits 4 --mlx-path mlx_models/${model}_quantized_4bits
+```
+
+[^1]: Refer to the [arXiv paper](https://arxiv.org/abs/2212.04356), [blog post](https://openai.com/research/whisper), and [code](https://github.com/openai/whisper) for more details.
+
+
+
+================================================
+FILE: whisper/benchmark.py
+================================================
+# Copyright © 2023-2024 Apple Inc.
+import argparse
+import os
+import time
+
+import mlx.core as mx
+from mlx_whisper import audio, decoding, load_models, transcribe
+
+audio_file = "mlx_whisper/assets/ls_test.flac"
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser(description="Benchmark script.")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Use all available models, i.e. tiny,small,medium,large-v3",
+    )
+    parser.add_argument(
+        "-m",
+        "--models",
+        type=str,
+        help="Specify models as a comma-separated list (e.g., tiny,small,medium)",
+    )
+    return parser.parse_args()
+
+
+def timer(fn, *args):
+    for _ in range(5):
+        fn(*args)
+
+    num_its = 10
+
+    tic = time.perf_counter()
+    for _ in range(num_its):
+        fn(*args)
+    toc = time.perf_counter()
+    return (toc - tic) / num_its
+
+
+def feats(n_mels: int = 80):
+    data = audio.load_audio(audio_file)
+    data = audio.pad_or_trim(data)
+    mels = audio.log_mel_spectrogram(data, n_mels)
+    mx.eval(mels)
+    return mels
+
+
+def model_forward(model, mels, tokens):
+    logits = model(mels, tokens)
+    mx.eval(logits)
+    return logits
+
+
+def decode(model, mels):
+    return decoding.decode(model, mels)
+
+
+def everything(model_path):
+    return transcribe(audio_file, path_or_hf_repo=model_path)
+
+
+if __name__ == "__main__":
+    args = parse_arguments()
+    if args.all:
+        models = ["tiny", "small", "medium", "large-v3"]
+    elif args.models:
+        models = args.models.split(",")
+    else:
+        models = ["tiny"]
+
+    print("Selected models:", models)
+
+    feat_time = timer(feats)
+    print(f"\nFeature time {feat_time:.3f}")
+
+    for model_name in models:
+        model_path = f"mlx-community/whisper-{model_name}-mlx"
+        print(f"\nModel: {model_name.upper()}")
+        tokens = mx.array(
+            [
+                50364,
+                1396,
+                264,
+                665,
+                5133,
+                23109,
+                25462,
+                264,
+                6582,
+                293,
+                750,
+                632,
+                42841,
+                292,
+                370,
+                938,
+                294,
+                4054,
+                293,
+                12653,
+                356,
+                50620,
+                50620,
+                23563,
+                322,
+                3312,
+                13,
+                50680,
+            ],
+            mx.int32,
+        )[None]
+        model = load_models.load_model(path_or_hf_repo=model_path, dtype=mx.float16)
+        mels = feats(model.dims.n_mels)[None].astype(mx.float16)
+        model_forward_time = timer(model_forward, model, mels, tokens)
+        print(f"Model forward time {model_forward_time:.3f}")
+        decode_time = timer(decode, model, mels)
+        print(f"Decode time {decode_time:.3f}")
+        everything_time = timer(everything, model_path)
+        print(f"Everything time {everything_time:.3f}")
+        print(f"\n{'-----' * 10}\n")
+
+
+
+================================================
+FILE: whisper/convert.py
+================================================
+# Copyright © 2023-2024 Apple Inc.
+
+import argparse
+import copy
+import hashlib
+import json
+import os
+import urllib
+import warnings
+from dataclasses import asdict
+from pathlib import Path
+from typing import List
+
+import mlx.core as mx
+import mlx.nn as nn
+import numpy as np
+import torch
+from mlx.utils import tree_flatten, tree_map, tree_unflatten
+from mlx_whisper import torch_whisper
+from mlx_whisper.whisper import ModelDimensions, Whisper
+from tqdm import tqdm
+
+_VALID_DTYPES = {"float16", "float32"}
+
+_MODELS = {
+    "tiny.en": "https://openaipublic.azureedge.net/main/whisper/models/d3dd57d32accea0b295c96e26691aa14d8822fac7d9d27d5dc00b4ca2826dd03/tiny.en.pt",
+    "tiny": "https://openaipublic.azureedge.net/main/whisper/models/65147644a518d12f04e32d6f3b26facc3f8dd46e5390956a9424a650c0ce22b9/tiny.pt",
+    "base.en": "https://openaipublic.azureedge.net/main/whisper/models/25a8566e1d0c1e2231d1c762132cd20e0f96a85d16145c3a00adf5d1ac670ead/base.en.pt",
+    "base": "https://openaipublic.azureedge.net/main/whisper/models/ed3a0b6b1c0edf879ad9b11b1af5a0e6ab5db9205f891f668f8b0e6c6326e34e/base.pt",
+    "small.en": "https://openaipublic.azureedge.net/main/whisper/models/f953ad0fd29cacd07d5a9eda5624af0f6bcf2258be67c92b79389873d91e0872/small.en.pt",
+    "small": "https://openaipublic.azureedge.net/main/whisper/models/9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794/small.pt",
+    "medium.en": "https://openaipublic.azureedge.net/main/whisper/models/d7440d1dc186f76616474e0ff0b3b6b879abc9d1a4926b7adfa41db2d497ab4f/medium.en.pt",
+    "medium": "https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt",
+    "large-v1": "https://openaipublic.azureedge.net/main/whisper/models/e4b87e7e0bf463eb8e6956e646f1e277e901512310def2c24bf0e11bd3c28e9a/large-v1.pt",
+    "large-v2": "https://openaipublic.azureedge.net/main/whisper/models/81f7c96c852ee8fc832187b0132e569d6c3065a3252ed18e56effd0b6a73e524/large-v2.pt",
+    "large-v3": "https://openaipublic.azureedge.net/main/whisper/models/e5b1a55b89c1367dacf97e3e19bfd829a01529dbfdeefa8caeb59b3f1b81dadb/large-v3.pt",
+    "large": "https://openaipublic.azureedge.net/main/whisper/models/e5b1a55b89c1367dacf97e3e19bfd829a01529dbfdeefa8caeb59b3f1b81dadb/large-v3.pt",
+    "large-v3-turbo": "https://openaipublic.azureedge.net/main/whisper/models/aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a/large-v3-turbo.pt",
+    "turbo": "https://openaipublic.azureedge.net/main/whisper/models/aff26ae408abcba5fbf8813c21e62b0941638c5f6eebfb145be0c9839262a19a/large-v3-turbo.pt",
+}
+
+# base85-encoded (n_layers, n_heads) boolean arrays indicating the cross-attention heads that are
+# highly correlated to the word-level timing, i.e. the alignment between audio and text tokens.
+_ALIGNMENT_HEADS = {
+    "tiny.en": b"ABzY8J1N>@0{>%R00Bk>$p{7v037`oCl~+#00",
+    "tiny": b"ABzY8bu8Lr0{>%RKn9Fp%m@SkK7Kt=7ytkO",
+    "base.en": b"ABzY8;40c<0{>%RzzG;p*o+Vo09|#PsxSZm00",
+    "base": b"ABzY8KQ!870{>%RzyTQH3`Q^yNP!>##QT-<FaQ7m",
+    "small.en": b"ABzY8>?_)10{>%RpeA61k&I|OI3I$65C{;;pbCHh0B{qLQ;+}v00",
+    "small": b"ABzY8DmU6=0{>%Rpa?J`kvJ6qF(V^F86#Xh7JUGMK}P<N0000",
+    "medium.en": b"ABzY8usPae0{>%R7<zz_OvQ{)4kMa0BMw6u5rT}kRKX;$NfYBv00*Hl@qhsU00",
+    "medium": b"ABzY8B0Jh+0{>%R7}kK1fFL7w6%<-Pf*t^=N)Qr&0RR9",
+    "large-v1": b"ABzY8r9j$a0{>%R7#4sLmoOs{s)o3~84-RPdcFk!JR<kSfC2yj",
+    "large-v2": b"ABzY8zd+h!0{>%R7=D0pU<_bnWW*tkYAhobTNnu$jnkEkXqp)j;w1Tzk)UH3X%SZd&fFZ2fC2yj",
+    "large-v3": b"ABzY8gWO1E0{>%R7(9S+Kn!D~%ngiGaR?*L!iJG9p-nab0JQ=-{D1-g00",
+    "large": b"ABzY8gWO1E0{>%R7(9S+Kn!D~%ngiGaR?*L!iJG9p-nab0JQ=-{D1-g00",
+    "large-v3-turbo": b"ABzY8j^C+e0{>%RARaKHP%t(lGR*)0g!tONPyhe`",
+    "turbo": b"ABzY8j^C+e0{>%RARaKHP%t(lGR*)0g!tONPyhe`",
+}
+
+
+def _download(url: str, root: str) -> str:
+    os.makedirs(root, exist_ok=True)
+
+    expected_sha256 = url.split("/")[-2]
+    download_target = os.path.join(root, os.path.basename(url))
+
+    if os.path.exists(download_target) and not os.path.isfile(download_target):
+        raise RuntimeError(f"{download_target} exists and is not a regular file")
+
+    if os.path.isfile(download_target):
+        with open(download_target, "rb") as f:
+            model_bytes = f.read()
+        if hashlib.sha256(model_bytes).hexdigest() == expected_sha256:
+            return download_target
+        else:
+            warnings.warn(
+                f"{download_target} exists, but the SHA256 checksum does not match; re-downloading the file"
+            )
+
+    with urllib.request.urlopen(url) as source, open(download_target, "wb") as output:
+        with tqdm(
+            total=int(source.info().get("Content-Length")),
+            ncols=80,
+            unit="iB",
+            unit_scale=True,
+            unit_divisor=1024,
+        ) as loop:
+            while True:
+                buffer = source.read(8192)
+                if not buffer:
+                    break
+
+                output.write(buffer)
+                loop.update(len(buffer))
+
+    with open(download_target, "rb") as fid:
+        model_bytes = fid.read()
+    if hashlib.sha256(model_bytes).hexdigest() != expected_sha256:
+        raise RuntimeError(
+            "Model has been downloaded but the SHA256 checksum does not not match. Please retry loading the model."
+        )
+
+    return download_target
+
+
+def available_models() -> List[str]:
+    """Returns the names of available models"""
+    return list(_MODELS.keys())
+
+
+def hf_to_pt(weights, config):
+    config = {
+        "n_mels": config["num_mel_bins"],
+        "n_audio_ctx": config["max_source_positions"],
+        "n_audio_state": config["d_model"],
+        "n_audio_head": config["encoder_attention_heads"],
+        "n_audio_layer": config["encoder_layers"],
+        "n_vocab": config["vocab_size"],
+        "n_text_ctx": config["max_target_positions"],
+        "n_text_state": config["d_model"],
+        "n_text_head": config["decoder_attention_heads"],
+        "n_text_layer": config["decoder_layers"],
+    }
+
+    def remap(k):
+        k = k.replace("model.", "")
+        k = k.replace(".layers", ".blocks")
+        k = k.replace(".self_attn", ".attn")
+        k = k.replace(".attn_layer_norm", ".attn_ln")
+        k = k.replace(".encoder_attn.", ".cross_attn.")
+        k = k.replace(".encoder_attn_layer_norm", ".cross_attn_ln")
+        k = k.replace(".final_layer_norm", ".mlp_ln")
+        k = k.replace(".q_proj", ".query")
+        k = k.replace(".k_proj", ".key")
+        k = k.replace(".v_proj", ".value")
+        k = k.replace(".out_proj", ".out")
+        k = k.replace(".fc1", ".mlp1")
+        k = k.replace(".fc2", ".mlp2")
+        k = k.replace("embed_positions.weight", "positional_embedding")
+        k = k.replace("decoder.embed_tokens", "decoder.token_embedding")
+        k = k.replace("encoder.layer_norm", "encoder.ln_post")
+        k = k.replace("decoder.layer_norm", "decoder.ln")
+        return k
+
+    # token embeddings are shared with output projection
+    weights.pop("proj_out.weight", None)
+    weights = {remap(k): v for k, v in weights.items()}
+    return weights, config
+
+
+def load_torch_weights_and_config(
+    name_or_path: str,
+    download_root: str = None,
+):
+    if download_root is None:
+        download_root = os.path.join(os.path.expanduser("~"), ".cache/whisper")
+
+    # todo: accept alignment_heads of local Pytorch checkpoint
+    alignment_heads = None
+    if name_or_path in _MODELS:
+        alignment_heads = _ALIGNMENT_HEADS[name_or_path]
+        name_or_path = _download(_MODELS[name_or_path], download_root)
+    elif not Path(name_or_path).exists():
+        # Try downloading from HF
+        from huggingface_hub import snapshot_download
+
+        name_or_path = snapshot_download(
+            repo_id=name_or_path,
+            allow_patterns=[
+                "*.json",
+                "pytorch_model.bin",
+                "model.safetensors",
+                "*.txt",
+            ],
+        )
+
+    if name_or_path.endswith(".pt"):
+        checkpoint = torch.load(name_or_path, map_location="cpu", weights_only=False)
+        weights, config = checkpoint["model_state_dict"], checkpoint["dims"]
+    else:
+        name_or_path = Path(name_or_path)
+        pt_path = name_or_path / "pytorch_model.bin"
+        if pt_path.is_file():
+            weights = torch.load(pt_path, map_location="cpu")
+        else:
+            weights = mx.load(str(name_or_path / "model.safetensors"))
+        with open(name_or_path / "config.json", "r") as fp:
+            config = json.load(fp)
+        weights, config = hf_to_pt(weights, config)
+
+    return weights, config, alignment_heads
+
+
+def load_torch_model(
+    name_or_path: str,
+    download_root: str = None,
+) -> torch_whisper.Whisper:
+    """
+    Load a Whisper ASR model
+
+    Parameters
+    ----------
+    name_or_path : str
+        one of the official model names listed by `whisper.available_models()` or
+        a local Pytorch checkpoint which is in the original OpenAI format
+    download_root: str
+        path to download the model files; by default, it uses "~/.cache/whisper"
+
+    Returns
+    -------
+    model : Whisper
+        The Whisper ASR model instance
+    """
+
+    if download_root is None:
+        download_root = os.path.join(os.path.expanduser("~"), ".cache/whisper")
+
+    weights, config, alignment_heads = load_torch_weights_and_config(
+        name_or_path, download_root
+    )
+    dims = torch_whisper.ModelDimensions(**config)
+    model = torch_whisper.Whisper(dims)
+    model.load_state_dict(weights)
+
+    if alignment_heads is not None:
+        model.set_alignment_heads(alignment_heads)
+
+    return model
+
+
+def convert(name_or_path: str, dtype: mx.Dtype = mx.float16):
+    def remap(key, value):
+        key = key.replace("mlp.0", "mlp1")
+        key = key.replace("mlp.2", "mlp2")
+        if "conv" in key and value.ndim == 3:
+            value = value.swapaxes(1, 2)
+        if isinstance(value, torch.Tensor):
+            value = mx.array(value.detach())
+        return key, value.astype(dtype)
+
+    weights, config, alignment_heads = load_torch_weights_and_config(name_or_path)
+    weights.pop("encoder.positional_embedding", None)
+    weights = dict(remap(k, v) for k, v in weights.items())
+
+    model_dims = ModelDimensions(**config)
+    model = Whisper(model_dims, dtype)
+    model.load_weights(list(weights.items()), strict=False)
+
+    if alignment_heads is not None:
+        model.set_alignment_heads(alignment_heads)
+
+    return model
+
+
+def upload_to_hub(path: str, name: str, torch_name_or_path: str):
+    import os
+
+    from huggingface_hub import HfApi, ModelCard, logging
+
+    repo_id = f"mlx-community/{name}"
+    text = f"""
+---
+library_name: mlx
+---
+
+# {name}
+This model was converted to MLX format from [`{torch_name_or_path}`]().
+
+## Use with mlx
+```bash
+pip install mlx-whisper
+```
+
+```python
+import mlx_whisper
+
+result = mlx_whisper.transcribe(
+    "FILE_NAME",
+    path_or_hf_repo={repo_id},
+)
+```
+"""
+    card = ModelCard(text)
+    card.save(os.path.join(path, "README.md"))
+
+    logging.set_verbosity_info()
+
+    api = HfApi()
+    api.create_repo(repo_id=repo_id, exist_ok=True)
+    api.upload_folder(
+        folder_path=path,
+        repo_id=repo_id,
+        repo_type="model",
+    )
+
+
+def quantize(weights, config, args):
+    quantized_config = copy.deepcopy(config)
+
+    # Load the model:
+    model = Whisper(ModelDimensions(**config))
+    weights = tree_map(mx.array, weights)
+    model.update(tree_unflatten(list(weights.items())))
+
+    # Quantize the model:
+    nn.quantize(model, args.q_group_size, args.q_bits)
+
+    # Update the config:
+    quantized_config["quantization"] = {
+        "group_size": args.q_group_size,
+        "bits": args.q_bits,
+    }
+    quantized_weights = dict(tree_flatten(model.parameters()))
+
+    return quantized_weights, quantized_config
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Convert Whisper weights to MLX.")
+    parser.add_argument(
+        "--torch-name-or-path",
+        type=str,
+        default="tiny",
+        help="The name or path to the PyTorch model.",
+    )
+    parser.add_argument(
+        "--mlx-path",
+        type=str,
+        default="mlx_models",
+        help="The path to save the MLX model.",
+    )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default="float16",
+        help="The dtype to save the MLX model.",
+    )
+    parser.add_argument(
+        "-q",
+        "--quantize",
+        help="Generate a quantized model.",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--q-group-size",
+        help="Group size for quantization.",
+        type=int,
+        default=64,
+    )
+    parser.add_argument(
+        "--q-bits",
+        help="Bits per weight for quantization.",
+        type=int,
+        default=4,
+    )
+    parser.add_argument(
+        "--upload-name",
+        help="The name of model to upload to Hugging Face MLX Community",
+        type=str,
+        default=None,
+    )
+
+    args = parser.parse_args()
+
+    assert (
+        args.dtype in _VALID_DTYPES
+    ), f"dtype {args.dtype} not found in {_VALID_DTYPES}"
+    dtype = getattr(mx, args.dtype)
+
+    print("[INFO] Loading")
+    model = convert(args.torch_name_or_path, dtype)
+    config = asdict(model.dims)
+    weights = dict(tree_flatten(model.parameters()))
+
+    if args.quantize:
+        print("[INFO] Quantizing")
+        weights, config = quantize(weights, config, args)
+
+    mlx_path = Path(args.mlx_path)
+    mlx_path.mkdir(parents=True, exist_ok=True)
+
+    # Save weights
+    print("[INFO] Saving")
+    mx.save_safetensors(str(mlx_path / "model.safetensors"), weights)
+
+    # Save config.json with model_type
+    with open(str(mlx_path / "config.json"), "w") as f:
+        config["model_type"] = "whisper"
+        json.dump(config, f, indent=4)
+
+    if args.upload_name is not None:
+        upload_to_hub(mlx_path, args.upload_name, args.torch_name_or_path)
+
+
+
+================================================
+FILE: whisper/MANIFEST.in
+================================================
+include mlx_whisper/requirements.txt
+include mlx_whisper/assets/mel_filters.npz
+include mlx_whisper/assets/multilingual.tiktoken
+include mlx_whisper/assets/gpt2.tiktoken
+
+
+
+================================================
+FILE: whisper/setup.py
+================================================
+# Copyright © 2024 Apple Inc.
+
+import sys
+from pathlib import Path
+
+from setuptools import find_namespace_packages, setup
+
+package_dir = Path(__file__).parent / "mlx_whisper"
+
+with open(package_dir / "requirements.txt") as fid:
+    requirements = [l.strip() for l in fid.readlines()]
+
+sys.path.append(str(package_dir))
+
+from _version import __version__
+
+setup(
+    name="mlx-whisper",
+    version=__version__,
+    description="OpenAI Whisper on Apple silicon with MLX and the Hugging Face Hub",
+    long_description=open("README.md", encoding="utf-8").read(),
+    long_description_content_type="text/markdown",
+    readme="README.md",
+    author_email="mlx@group.apple.com",
+    author="MLX Contributors",
+    url="https://github.com/ml-explore/mlx-examples",
+    license="MIT",
+    install_requires=requirements,
+    packages=find_namespace_packages(),
+    include_package_data=True,
+    python_requires=">=3.8",
+    entry_points={
+        "console_scripts": [
+            "mlx_whisper = mlx_whisper.cli:main",
+        ]
+    },
+)
+
+
+
+================================================
+FILE: whisper/test.py
+================================================
+# Copyright © 2023-2024 Apple Inc.
+
+import json
+import os
+import unittest
+from dataclasses import asdict
+from pathlib import Path
+
+import mlx.core as mx
+import mlx_whisper
+import mlx_whisper.audio as audio
+import mlx_whisper.decoding as decoding
+import mlx_whisper.load_models as load_models
+import numpy as np
+import torch
+from convert import convert, load_torch_model, quantize
+from mlx.utils import tree_flatten
+
+MODEL_NAME = "tiny"
+MLX_FP32_MODEL_PATH = "mlx_models/tiny_fp32"
+MLX_FP16_MODEL_PATH = "mlx_models/tiny_fp16"
+MLX_4BITS_MODEL_PATH = "mlx_models/tiny_quantized_4bits"
+TEST_AUDIO = "mlx_whisper/assets/ls_test.flac"
+
+
+def _save_model(save_dir, weights, config):
+    mlx_path = Path(save_dir)
+    mlx_path.mkdir(parents=True, exist_ok=True)
+
+    # Save weights
+    np.savez(str(mlx_path / "weights.npz"), **weights)
+
+    # Save config.json with model_type
+    with open(str(mlx_path / "config.json"), "w") as f:
+        config["model_type"] = "whisper"
+        json.dump(config, f, indent=4)
+
+    config.pop("model_type", None)
+
+
+def load_torch_and_mlx():
+    torch_model = load_torch_model(MODEL_NAME)
+
+    fp32_model = convert(MODEL_NAME, dtype=mx.float32)
+    config = asdict(fp32_model.dims)
+    weights = dict(tree_flatten(fp32_model.parameters()))
+    _save_model(MLX_FP32_MODEL_PATH, weights, config)
+
+    fp16_model = convert(MODEL_NAME, dtype=mx.float16)
+    config = asdict(fp16_model.dims)
+    weights = dict(tree_flatten(fp16_model.parameters()))
+    _save_model(MLX_FP16_MODEL_PATH, weights, config)
+
+    args = type("", (), {})()
+    args.q_group_size = 64
+    args.q_bits = 4
+    weights, config = quantize(weights, config, args)
+    _save_model(MLX_4BITS_MODEL_PATH, weights, config)
+
+    return torch_model, fp32_model, fp16_model
+
+
+def forward_torch(model, mels, tokens):
+    mels = torch.Tensor(mels).to(torch.float32)
+    tokens = torch.Tensor(tokens).to(torch.int32)
+    with torch.no_grad():
+        logits = model.forward(mels, tokens)
+    return logits.numpy()
+
+
+def forward_mlx(model, mels, tokens):
+    mels = mx.array(mels.transpose(0, 2, 1))
+    tokens = mx.array(tokens, mx.int32)
+    logits = model(mels, tokens)
+    return np.array(logits)
+
+
+class TestWhisper(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        _, cls.model, _ = load_torch_and_mlx()
+        data = audio.load_audio(TEST_AUDIO)
+        data = audio.pad_or_trim(data)
+        cls.mels = audio.log_mel_spectrogram(data)
+
+    def test_torch_mlx(self):
+        np.random.seed(10)
+
+        torch_model = load_torch_model(MODEL_NAME)
+        dims = torch_model.dims
+
+        mels = np.random.randn(1, dims.n_mels, 3_000)
+        tokens = np.random.randint(0, dims.n_vocab, (1, 20))
+
+        torch_logits = forward_torch(torch_model, mels, tokens)
+
+        mlx_logits = forward_mlx(self.model, mels, tokens)
+
+        self.assertTrue(np.allclose(torch_logits, mlx_logits, atol=1e-2, rtol=1e-2))
+
+    def test_fp16(self):
+        mlx_model = load_models.load_model(MLX_FP16_MODEL_PATH, mx.float16)
+        dims = mlx_model.dims
+        mels = mx.array(np.random.randn(1, 3_000, dims.n_mels), mx.float16)
+        tokens = mx.array(np.random.randint(0, dims.n_vocab, (1, 20)), mx.int32)
+        logits = mlx_model(mels, tokens)
+        self.assertEqual(logits.dtype, mx.float16)
+
+    def test_quantized_4bits(self):
+        mlx_model = load_models.load_model(MLX_4BITS_MODEL_PATH, mx.float16)
+        dims = mlx_model.dims
+        mels = mx.array(np.random.randn(1, 3_000, dims.n_mels), mx.float16)
+        tokens = mx.array(np.random.randint(0, dims.n_vocab, (1, 20)), mx.int32)
+        logits = mlx_model(mels, tokens)
+        # Here, we just test if 4-bit models can forward, as the quantized tiny models struggle with accurate transcription
+        self.assertEqual(logits.dtype, mx.float16)
+
+    def test_decode_lang(self):
+        options = decoding.DecodingOptions(task="lang_id", fp16=False)
+        result = decoding.decode(self.model, self.mels, options)
+        self.assertEqual(result.language, "en")
+        self.assertEqual(len(result.language_probs), 99)
+        self.assertAlmostEqual(
+            result.language_probs["en"], 0.9947282671928406, places=5
+        )
+
+    def test_decode_greedy(self):
+        result = decoding.decode(self.model, self.mels, fp16=False)
+        self.assertEqual(result.language, "en")
+        self.assertEqual(
+            result.tokens,
+            [
+                50364,
+                1396,
+                264,
+                665,
+                5133,
+                23109,
+                25462,
+                264,
+                6582,
+                293,
+                750,
+                632,
+                42841,
+                292,
+                370,
+                938,
+                294,
+                4054,
+                293,
+                12653,
+                356,
+                50620,
+                50620,
+                23563,
+                322,
+                3312,
+                13,
+                50680,
+            ],
+        )
+        self.assertEqual(
+            result.text,
+            (
+                "Then the good soul openly sorted the boat and she "
+                "had buoyed so long in secret and bravely stretched on alone."
+            ),
+        )
+        self.assertAlmostEqual(result.avg_logprob, -0.4975455382774616, places=3)
+        self.assertAlmostEqual(result.no_speech_prob, 0.009631240740418434, places=4)
+        self.assertAlmostEqual(result.compression_ratio, 1.2359550561797752)
+
+        # Small temp should give the same results
+        result = decoding.decode(self.model, self.mels, temperature=1e-8, fp16=False)
+
+        self.assertEqual(
+            result.text,
+            (
+                "Then the good soul openly sorted the boat and she "
+                "had buoyed so long in secret and bravely stretched on alone."
+            ),
+        )
+        self.assertAlmostEqual(result.avg_logprob, -0.4975455382774616, places=3)
+        self.assertAlmostEqual(result.no_speech_prob, 0.009631240740418434, places=4)
+        self.assertAlmostEqual(result.compression_ratio, 1.2359550561797752)
+
+    def test_transcribe(self):
+        result = mlx_whisper.transcribe(
+            TEST_AUDIO, path_or_hf_repo=MLX_FP32_MODEL_PATH, fp16=False
+        )
+        self.assertEqual(
+            result["text"],
+            (
+                " Then the good soul openly sorted the boat and she "
+                "had buoyed so long in secret and bravely stretched on alone."
+            ),
+        )
+
+    def test_transcribe_alice(self):
+        audio_file = os.path.join(
+            os.path.expanduser("~"),
+            ".cache/whisper/alice.mp3",
+        )
+        if not os.path.exists(audio_file):
+            print("To run this test download the alice in wonderland audiobook:")
+            print("bash path_to_whisper_repo/whisper/assets/download_alice.sh")
+            return
+
+        result = mlx_whisper.transcribe(
+            audio_file, path_or_hf_repo=MLX_FP32_MODEL_PATH, fp16=False
+        )
+        self.assertEqual(len(result["text"]), 10920)
+        self.assertEqual(result["language"], "en")
+        self.assertEqual(len(result["segments"]), 77)
+
+        expected_5 = {
+            "id": 5,
+            "seek": 2800,
+            "start": 40.0,
+            "end": 46.0,
+            "text": " Oh my poor little feet, I wonder who will put on your shoes and stockings for you now tears.",
+            "tokens": [
+                50964,
+                876,
+                452,
+                4716,
+                707,
+                3521,
+                11,
+                286,
+                2441,
+                567,
+                486,
+                829,
+                322,
+                428,
+                6654,
+                293,
+                4127,
+                1109,
+                337,
+                291,
+                586,
+                10462,
+                13,
+                51264,
+            ],
+            "temperature": 0.0,
+            "avg_logprob": -0.19670599699020386,
+            "compression_ratio": 1.5991379310344827,
+            "no_speech_prob": 0.09746722131967545,
+        }
+
+        expected_73 = {
+            "id": 73,
+            "seek": 70700,
+            "start": 707.0,
+            "end": 715.0,
+            "text": " let us get to the shore, and then I'll tell you my history, and you'll understand why it is that I hate cats and dogs.",
+            "tokens": [
+                50364,
+                718,
+                505,
+                483,
+                281,
+                264,
+                17805,
+                11,
+                293,
+                550,
+                286,
+                603,
+                980,
+                291,
+                452,
+                2503,
+                11,
+                293,
+                291,
+                603,
+                1223,
+                983,
+                309,
+                307,
+                300,
+                286,
+                4700,
+                11111,
+                293,
+                7197,
+                13,
+                50764,
+            ],
+            "temperature": 0.0,
+            "avg_logprob": -0.1350895343440594,
+            "compression_ratio": 1.6208333333333333,
+            "no_speech_prob": 0.009053784422576427,
+        }
+
+        def check_segment(seg, expected):
+            for k, v in expected.items():
+                if isinstance(v, float):
+                    self.assertAlmostEqual(seg[k], v, places=2)
+                else:
+                    self.assertEqual(seg[k], v)
+
+        # Randomly check a couple of segments
+        check_segment(result["segments"][5], expected_5)
+        check_segment(result["segments"][73], expected_73)
+
+    def test_transcribe_word_level_timestamps_confidence_scores(self):
+        result = mlx_whisper.transcribe(
+            TEST_AUDIO,
+            path_or_hf_repo=MLX_FP16_MODEL_PATH,
+            word_timestamps=True,
+        )
+
+        # result predicted with openai-whisper
+        expected_0 = [
+            {
+                "word": " Then",
+                "start": 0.0,
+                "end": 0.94,
+                "probability": 0.855542778968811,
+            },
+            {
+                "word": " the",
+                "start": 0.94,
+                "end": 1.12,
+                "probability": 0.6500106453895569,
+            },
+            {
+                "word": " good",
+                "start": 1.12,
+                "end": 1.32,
+                "probability": 0.5503873825073242,
+            },
+            {
+                "word": " soul",
+                "start": 1.32,
+                "end": 1.56,
+                "probability": 0.46757155656814575,
+            },
+            {
+                "word": " openly",
+                "start": 1.56,
+                "end": 2.0,
+                "probability": 0.9840946793556213,
+            },
+            {
+                "word": " sorted",
+                "start": 2.0,
+                "end": 2.38,
+                "probability": 0.24167272448539734,
+            },
+            {
+                "word": " the",
+                "start": 2.38,
+                "end": 2.58,
+                "probability": 0.9875414967536926,
+            },
+            {
+                "word": " boat",
+                "start": 2.58,
+                "end": 2.8,
+                "probability": 0.5856029391288757,
+            },
+            {
+                "word": " and",
+                "start": 2.8,
+                "end": 2.98,
+                "probability": 0.913351833820343,
+            },
+            {
+                "word": " she",
+                "start": 2.98,
+                "end": 3.1,
+                "probability": 0.9913808703422546,
+            },
+            {
+                "word": " had",
+                "start": 3.1,
+                "end": 3.32,
+                "probability": 0.9952940344810486,
+            },
+            {
+                "word": " buoyed",
+                "start": 3.32,
+                "end": 3.58,
+                "probability": 0.6411589980125427,
+            },
+            {
+                "word": " so",
+                "start": 3.58,
+                "end": 3.8,
+                "probability": 0.9682658314704895,
+            },
+            {
+                "word": " long",
+                "start": 3.8,
+                "end": 4.06,
+                "probability": 0.9953522682189941,
+            },
+            {
+                "word": " in",
+                "start": 4.06,
+                "end": 4.26,
+                "probability": 0.6745936870574951,
+            },
+            {
+                "word": " secret",
+                "start": 4.26,
+                "end": 4.56,
+                "probability": 0.9905064702033997,
+            },
+            {
+                "word": " and",
+                "start": 4.56,
+                "end": 4.9,
+                "probability": 0.856008768081665,
+            },
+            {
+                "word": " bravely",
+                "start": 4.9,
+                "end": 5.28,
+                "probability": 0.8477402329444885,
+            },
+        ]
+
+        def check_words(words, expected_words):
+            for word, expected_word in zip(words, expected_words):
+                for k, v in expected_word.items():
+                    if isinstance(v, float):
+                        self.assertAlmostEqual(word[k], v, places=1)
+                    else:
+                        self.assertEqual(word[k], v)
+
+        # Randomly check a couple of segments
+        check_words(result["segments"][0]["words"], expected_0)
+
+
+class TestAudio(unittest.TestCase):
+    def test_load(self):
+        data = audio.load_audio(TEST_AUDIO)
+        data_8k = audio.load_audio(TEST_AUDIO, 8000)
+        n = 106640
+        self.assertTrue(data.shape, (n,))
+        self.assertTrue(data.dtype, np.float32)
+        self.assertTrue(data_8k.shape, (n // 2,))
+
+    def test_pad(self):
+        data = audio.load_audio(TEST_AUDIO)
+        data = audio.pad_or_trim(data, 20_000)
+        self.assertTrue(data.shape, [20_000])
+
+    def test_mel_spec(self):
+        mels = audio.log_mel_spectrogram(TEST_AUDIO)
+        self.assertTrue(mels.shape, [80, 400])
+        self.assertTrue(mels.dtype, mx.float32)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+
+================================================
+FILE: whisper/mlx_whisper/__init__.py
+================================================
+# Copyright © 2023-2024 Apple Inc.
+
+from . import audio, decoding, load_models
+from ._version import __version__
+from .transcribe import transcribe
+
+
+
+================================================
+FILE: whisper/mlx_whisper/_version.py
+================================================
+# Copyright © 2023-2024 Apple Inc.
+
+__version__ = "0.4.3"
+
+
+
+================================================
+FILE: whisper/mlx_whisper/audio.py
+================================================
+# Copyright © 2023 Apple Inc.
+
+import os
+from functools import lru_cache
+from subprocess import CalledProcessError, run
+from typing import Optional, Union
+
+import mlx.core as mx
+import numpy as np
+
+# hard-coded audio hyperparameters
+SAMPLE_RATE = 16000
+N_FFT = 400
+HOP_LENGTH = 160
+CHUNK_LENGTH = 30
+N_SAMPLES = CHUNK_LENGTH * SAMPLE_RATE  # 480000 samples in a 30-second chunk
+N_FRAMES = N_SAMPLES // HOP_LENGTH  # 3000 frames in a mel spectrogram input
+
+N_SAMPLES_PER_TOKEN = HOP_LENGTH * 2  # the initial convolutions has stride 2
+FRAMES_PER_SECOND = SAMPLE_RATE // HOP_LENGTH  # 10ms per audio frame
+TOKENS_PER_SECOND = SAMPLE_RATE // N_SAMPLES_PER_TOKEN  # 20ms per audio token
+
+
+def load_audio(file: str = Optional[str], sr: int = SAMPLE_RATE, from_stdin=False):
+    """
+    Open an audio file and read as mono waveform, resampling as necessary
+
+    Parameters
+    ----------
+    file: str
+        The audio file to open
+
+    sr: int
+        The sample rate to resample the audio if necessary
+
+    Returns
+    -------
+    A NumPy array containing the audio waveform, in float32 dtype.
+    """
+
+    # This launches a subprocess to decode audio while down-mixing
+    # and resampling as necessary. Requires the ffmpeg CLI in PATH.
+    if from_stdin:
+        cmd = ["ffmpeg", "-i", "pipe:0"]
+    else:
+        cmd = ["ffmpeg", "-nostdin", "-i", file]
+
+    # fmt: off
+    cmd.extend([
+        "-threads", "0",
+        "-f", "s16le",
+        "-ac", "1",
+        "-acodec", "pcm_s16le",
+        "-ar", str(sr),
+        "-"
+    ])
+    # fmt: on
+    try:
+        out = run(cmd, capture_output=True, check=True).stdout
+    except CalledProcessError as e:
+        raise RuntimeError(f"Failed to load audio: {e.stderr.decode()}") from e
+
+    return mx.array(np.frombuffer(out, np.int16)).flatten().astype(mx.float32) / 32768.0
+
+
+def pad_or_trim(array, length: int = N_SAMPLES, *, axis: int = -1):
+    """
+    Pad or trim the audio array to N_SAMPLES, as expected by the encoder.
+    """
+    if array.shape[axis] > length:
+        sl = [slice(None)] * array.ndim
+        sl[axis] = slice(0, length)
+        array = array[tuple(sl)]
+
+    if array.shape[axis] < length:
+        pad_widths = [(0, 0)] * array.ndim
+        pad_widths[axis] = (0, length - array.shape[axis])
+        array = mx.pad(array, pad_widths)
+
+    return array
+
+
+@lru_cache(maxsize=None)
+def mel_filters(n_mels: int) -> mx.array:
+    """
+    load the mel filterbank matrix for projecting STFT into a Mel spectrogram.
+    Allows decoupling librosa dependency; saved using:
+
+        np.savez_compressed(
+            "mel_filters.npz",
+            mel_80=librosa.filters.mel(sr=16000, n_fft=400, n_mels=80),
+            mel_128=librosa.filters.mel(sr=16000, n_fft=400, n_mels=128),
+        )
+    """
+    assert n_mels in {80, 128}, f"Unsupported n_mels: {n_mels}"
+
+    filename = os.path.join(os.path.dirname(__file__), "assets", "mel_filters.npz")
+    return mx.load(filename)[f"mel_{n_mels}"]
+
+
+@lru_cache(maxsize=None)
+def hanning(size):
+    return mx.array(np.hanning(size + 1)[:-1])
+
+
+def stft(x, window, nperseg=256, noverlap=None, nfft=None, axis=-1, pad_mode="reflect"):
+    if nfft is None:
+        nfft = nperseg
+    if noverlap is None:
+        noverlap = nfft // 4
+
+    def _pad(x, padding, pad_mode="constant"):
+        if pad_mode == "constant":
+            return mx.pad(x, [(padding, padding)])
+        elif pad_mode == "reflect":
+            prefix = x[1 : padding + 1][::-1]
+            suffix = x[-(padding + 1) : -1][::-1]
+            return mx.concatenate([prefix, x, suffix])
+        else:
+            raise ValueError(f"Invalid pad_mode {pad_mode}")
+
+    padding = nperseg // 2
+    x = _pad(x, padding, pad_mode)
+
+    strides = [noverlap, 1]
+    t = (x.size - nperseg + noverlap) // noverlap
+    shape = [t, nfft]
+    x = mx.as_strided(x, shape=shape, strides=strides)
+    return mx.fft.rfft(x * window)
+
+
+def log_mel_spectrogram(
+    audio: Union[str, np.ndarray],
+    n_mels: int = 80,
+    padding: int = 0,
+):
+    """
+    Compute the log-Mel spectrogram of
+
+    Parameters
+    ----------
+    audio: Union[str, np.ndarray, mx.array], shape = (*)
+        The path to audio or either a NumPy or mlx array containing the audio waveform in 16 kHz
+
+    n_mels: int
+        The number of Mel-frequency filters, only 80 is supported
+
+    padding: int
+        Number of zero samples to pad to the right
+
+    Returns
+    -------
+    mx.array, shape = (80, n_frames)
+        An  array that contains the Mel spectrogram
+    """
+    if isinstance(audio, str):
+        audio = load_audio(audio)
+    elif not isinstance(audio, mx.array):
+        audio = mx.array(audio)
+
+    if padding > 0:
+        audio = mx.pad(audio, (0, padding))
+    window = hanning(N_FFT)
+    freqs = stft(audio, window, nperseg=N_FFT, noverlap=HOP_LENGTH)
+    magnitudes = freqs[:-1, :].abs().square()
+
+    filters = mel_filters(n_mels)
+    mel_spec = magnitudes @ filters.T
+
+    log_spec = mx.maximum(mel_spec, 1e-10).log10()
+    log_spec = mx.maximum(log_spec, log_spec.max() - 8.0)
+    log_spec = (log_spec + 4.0) / 4.0
+    return log_spec
+
+
+
+================================================
+FILE: whisper/mlx_whisper/cli.py
+================================================
+# Copyright © 2024 Apple Inc.
+
+import argparse
+import os
+import pathlib
+import traceback
+import warnings
+
+from . import audio
+from .tokenizer import LANGUAGES, TO_LANGUAGE_CODE
+from .transcribe import transcribe
+from .writers import get_writer
+
+
+def build_parser():
+    def optional_int(string):
+        return None if string == "None" else int(string)
+
+    def optional_float(string):
+        return None if string == "None" else float(string)
+
+    def str2bool(string):
+        str2val = {"True": True, "False": False}
+        if string in str2val:
+            return str2val[string]
+        else:
+            raise ValueError(f"Expected one of {set(str2val.keys())}, got {string}")
+
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+
+    parser.add_argument("audio", nargs="+", help="Audio file(s) to transcribe")
+
+    parser.add_argument(
+        "--model",
+        default="mlx-community/whisper-tiny",
+        type=str,
+        help="The model directory or hugging face repo",
+    )
+    parser.add_argument(
+        "--output-name",
+        type=str,
+        default=None,
+        help=(
+            "The name of transcription/translation output files before "
+            "--output-format extensions"
+        ),
+    )
+    parser.add_argument(
+        "--output-dir",
+        "-o",
+        type=str,
+        default=".",
+        help="Directory to save the outputs",
+    )
+    parser.add_argument(
+        "--output-format",
+        "-f",
+        type=str,
+        default="txt",
+        choices=["txt", "vtt", "srt", "tsv", "json", "all"],
+        help="Format of the output file",
+    )
+    parser.add_argument(
+        "--verbose",
+        type=str2bool,
+        default=True,
+        help="Whether to print out progress and debug messages",
+    )
+    parser.add_argument(
+        "--task",
+        type=str,
+        default="transcribe",
+        choices=["transcribe", "translate"],
+        help="Perform speech recognition ('transcribe') or speech translation ('translate')",
+    )
+    parser.add_argument(
+        "--language",
+        type=str,
+        default=None,
+        choices=sorted(LANGUAGES.keys())
+        + sorted([k.title() for k in TO_LANGUAGE_CODE.keys()]),
+        help="Language spoken in the audio, specify None to auto-detect",
+    )
+    parser.add_argument(
+        "--temperature", type=float, default=0, help="Temperature for sampling"
+    )
+    parser.add_argument(
+        "--best-of",
+        type=optional_int,
+        default=5,
+        help="Number of candidates when sampling with non-zero temperature",
+    )
+    parser.add_argument(
+        "--patience",
+        type=float,
+        default=None,
+        help="Optional patience value to use in beam decoding, as in https://arxiv.org/abs/2204.05424, the default (1.0) is equivalent to conventional beam search",
+    )
+    parser.add_argument(
+        "--length-penalty",
+        type=float,
+        default=None,
+        help="Optional token length penalty coefficient (alpha) as in https://arxiv.org/abs/1609.08144, uses simple length normalization by default.",
+    )
+    parser.add_argument(
+        "--suppress-tokens",
+        type=str,
+        default="-1",
+        help="Comma-separated list of token ids to suppress during sampling; '-1' will suppress most special characters except common punctuations",
+    )
+    parser.add_argument(
+        "--initial-prompt",
+        type=str,
+        default=None,
+        help="Optional text to provide as a prompt for the first window.",
+    )
+    parser.add_argument(
+        "--condition-on-previous-text",
+        type=str2bool,
+        default=True,
+        help="If True, provide the previous output of the model as a prompt for the next window; disabling may make the text inconsistent across windows, but the model becomes less prone to getting stuck in a failure loop",
+    )
+    parser.add_argument(
+        "--fp16",
+        type=str2bool,
+        default=True,
+        help="Whether to perform inference in fp16",
+    )
+    parser.add_argument(
+        "--compression-ratio-threshold",
+        type=optional_float,
+        default=2.4,
+        help="if the gzip compression ratio is higher than this value, treat the decoding as failed",
+    )
+    parser.add_argument(
+        "--logprob-threshold",
+        type=optional_float,
+        default=-1.0,
+        help="If the average log probability is lower than this value, treat the decoding as failed",
+    )
+    parser.add_argument(
+        "--no-speech-threshold",
+        type=optional_float,
+        default=0.6,
+        help="If the probability of the token is higher than this value the decoding has failed due to `logprob_threshold`, consider the segment as silence",
+    )
+    parser.add_argument(
+        "--word-timestamps",
+        type=str2bool,
+        default=False,
+        help="Extract word-level timestamps and refine the results based on them",
+    )
+    parser.add_argument(
+        "--prepend-punctuations",
+        type=str,
+        default="\"'“¿([{-",
+        help="If --word-timestamps is True, merge these punctuation symbols with the next word",
+    )
+    parser.add_argument(
+        "--append-punctuations",
+        type=str,
+        default="\"'.。,，!！?？:：”)]}、",
+        help="If --word-timestamps is True, merge these punctuation symbols with the previous word",
+    )
+    parser.add_argument(
+        "--highlight-words",
+        type=str2bool,
+        default=False,
+        help="(requires --word-timestamps True) underline each word as it is spoken in srt and vtt",
+    )
+    parser.add_argument(
+        "--max-line-width",
+        type=int,
+        default=None,
+        help="(requires --word-timestampss True) the maximum number of characters in a line before breaking the line",
+    )
+    parser.add_argument(
+        "--max-line-count",
+        type=int,
+        default=None,
+        help="(requires --word-timestamps True) the maximum number of lines in a segment",
+    )
+    parser.add_argument(
+        "--max-words-per-line",
+        type=int,
+        default=None,
+        help="(requires --word-timestamps True, no effect with --max-line-width) the maximum number of words in a segment",
+    )
+    parser.add_argument(
+        "--hallucination-silence-threshold",
+        type=optional_float,
+        help="(requires --word-timestamps True) skip silent periods longer than this threshold (in seconds) when a possible hallucination is detected",
+    )
+    parser.add_argument(
+        "--clip-timestamps",
+        type=str,
+        default="0",
+        help="Comma-separated list start,end,start,end,... timestamps (in seconds) of clips to process, where the last end timestamp defaults to the end of the file",
+    )
+    return parser
+
+
+def main():
+    parser = build_parser()
+    args = vars(parser.parse_args())
+    if args["verbose"] is True:
+        print(f"Args: {args}")
+
+    path_or_hf_repo: str = args.pop("model")
+    output_dir: str = args.pop("output_dir")
+    output_format: str = args.pop("output_format")
+    output_name: str = args.pop("output_name")
+    os.makedirs(output_dir, exist_ok=True)
+
+    writer = get_writer(output_format, output_dir)
+    word_options = [
+        "highlight_words",
+        "max_line_count",
+        "max_line_width",
+        "max_words_per_line",
+    ]
+    writer_args = {arg: args.pop(arg) for arg in word_options}
+    if not args["word_timestamps"]:
+        for k, v in writer_args.items():
+            if v:
+                argop = k.replace("_", "-")
+                parser.error(f"--{argop} requires --word-timestamps True")
+    if writer_args["max_line_count"] and not writer_args["max_line_width"]:
+        warnings.warn("--max-line-count has no effect without --max-line-width")
+    if writer_args["max_words_per_line"] and writer_args["max_line_width"]:
+        warnings.warn("--max-words-per-line has no effect with --max-line-width")
+
+    for audio_obj in args.pop("audio"):
+        if audio_obj == "-":
+            # receive the contents from stdin rather than read a file
+            audio_obj = audio.load_audio(from_stdin=True)
+
+            output_name = output_name or "content"
+        else:
+            output_name = output_name or pathlib.Path(audio_obj).stem
+        try:
+            result = transcribe(
+                audio_obj,
+                path_or_hf_repo=path_or_hf_repo,
+                **args,
+            )
+            writer(result, output_name, **writer_args)
+        except Exception as e:
+            traceback.print_exc()
+            print(f"Skipping {audio_obj} due to {type(e).__name__}: {str(e)}")
+
+
+if __name__ == "__main__":
+    main()
+
+
+
+================================================
+FILE: whisper/mlx_whisper/decoding.py
+================================================
+# Copyright © 2023 Apple Inc.
+
+import zlib
+from dataclasses import dataclass, field, replace
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+
+import mlx.core as mx
+import numpy as np
+from mlx.utils import tree_map
+
+from .audio import CHUNK_LENGTH
+from .tokenizer import Tokenizer, get_tokenizer
+
+
+def compression_ratio(text) -> float:
+    text_bytes = text.encode("utf-8")
+    return len(text_bytes) / len(zlib.compress(text_bytes))
+
+
+def detect_language(
+    model: "Whisper", mel: mx.array, tokenizer: Tokenizer = None
+) -> Tuple[mx.array, List[dict]]:
+    """
+    Detect the spoken language in the audio, and return them as list of strings, along with the ids
+    of the most probable language tokens and the probability distribution over all language tokens.
+    This is performed outside the main decode loop in order to not interfere with kv-caching.
+
+    Returns
+    -------
+    language_tokens : mx.array, shape = (n_audio,)
+        ids of the most probable language tokens, which appears after the startoftranscript token.
+    language_probs : List[Dict[str, float]], length = n_audio
+        list of dictionaries containing the probability distribution over all languages.
+    """
+    if tokenizer is None:
+        tokenizer = get_tokenizer(
+            model.is_multilingual, num_languages=model.num_languages
+        )
+    if (
+        tokenizer.language is None
+        or tokenizer.language_token not in tokenizer.sot_sequence
+    ):
+        raise ValueError(
+            "This model doesn't have language tokens so it can't perform lang id"
+        )
+
+    single = mel.ndim == 2
+    if single:
+        mel = mel[None]
+
+    # skip encoder forward pass if already-encoded audio features were given
+    if mel.shape[-2:] != (model.dims.n_audio_ctx, model.dims.n_audio_state):
+        mel = model.encoder(mel)
+
+    # forward pass using a single token, startoftranscript
+    n_audio = mel.shape[0]
+    x = mx.array([[tokenizer.sot]] * n_audio)  # [n_audio, 1]
+    logits = model.logits(x, mel)[:, 0]
+
+    # collect detected languages; suppress all non-language tokens
+    mask = mx.full(logits.shape[-1], -mx.inf, dtype=mx.float32)
+    mask[list(tokenizer.all_language_tokens)] = 0.0
+    logits += mask
+    language_tokens = mx.argmax(logits, axis=-1)
+    language_token_probs = mx.softmax(logits, axis=-1)
+    language_token_probs = np.array(language_token_probs)
+    language_probs = [
+        {
+            c: language_token_probs[i, j].item()
+            for j, c in zip(tokenizer.all_language_tokens, tokenizer.all_language_codes)
+        }
+        for i in range(n_audio)
+    ]
+
+    if single:
+        language_tokens = language_tokens[0]
+        language_probs = language_probs[0]
+
+    return language_tokens, language_probs
+
+
+@dataclass(frozen=True)
+class DecodingOptions:
+    # whether to perform X->X "transcribe" or X->English "translate"
+    task: str = "transcribe"
+
+    # language that the audio is in; uses detected language if None
+    language: Optional[str] = None
+
+    # sampling-related options
+    temperature: float = 0.0
+    sample_len: Optional[int] = None  # maximum number of tokens to sample
+    best_of: Optional[int] = None  # number of independent sample trajectories, if t > 0
+    beam_size: Optional[int] = None  # number of beams in beam search, if t == 0
+    patience: Optional[float] = None  # patience in beam search (arxiv:2204.05424)
+
+    # "alpha" in Google NMT, or None for length norm, when ranking generations
+    # to select which to return among the beams or best-of-N samples
+    length_penalty: Optional[float] = None
+
+    # text or tokens to feed as the prompt or the prefix; for more info:
+    # https://github.com/openai/whisper/discussions/117#discussioncomment-3727051
+    prompt: Optional[Union[str, List[int]]] = None  # for the previous context
+    prefix: Optional[Union[str, List[int]]] = None  # to prefix the current context
+
+    # list of tokens ids (or comma-separated token ids) to suppress
+    # "-1" will suppress a set of symbols as defined in `tokenizer.non_speech_tokens()`
+    suppress_tokens: Optional[Union[str, Iterable[int]]] = "-1"
+    suppress_blank: bool = True  # this will suppress blank outputs
+
+    # timestamp sampling options
+    without_timestamps: bool = False  # use <|notimestamps|> to sample text tokens only
+    max_initial_timestamp: Optional[float] = 1.0
+
+    # implementation details
+    fp16: bool = True  # use fp16 for most of the calculation
+
+
+@dataclass(frozen=True)
+class DecodingResult:
+    audio_features: mx.array
+    language: str
+    language_probs: Optional[Dict[str, float]] = None
+    tokens: List[int] = field(default_factory=list)
+    text: str = ""
+    avg_logprob: float = np.nan
+    no_speech_prob: float = np.nan
+    temperature: float = np.nan
+    compression_ratio: float = np.nan
+
+
+class Inference:
+    def __init__(self, model: "Whisper"):
+        self.model: "Whisper" = model
+        self.kv_cache = None
+
+    def logits(self, tokens: mx.array, audio_features: mx.array) -> mx.array:
+        """Perform a forward pass on the decoder and return per-token logits"""
+        logits, self.kv_cache, _ = self.model.decoder(
+            tokens, audio_features, kv_cache=self.kv_cache
+        )
+        return logits.astype(mx.float32)
+
+    def rearrange_kv_cache(self, source_indices):
+        """Update the key-value cache according to the updated beams"""
+        # update the key/value cache to contain the selected sequences
+        if source_indices != list(range(len(source_indices))):
+            self.kv_cache = tree_map(lambda x: x[source_indices], self.kv_cache)
+
+    def reset(self):
+        self.kv_cache = None
+
+
+class SequenceRanker:
+    def rank(
+        self, tokens: List[List[mx.array]], sum_logprobs: List[List[float]]
+    ) -> List[int]:
+        """
+        Given a list of groups of samples and their cumulative log probabilities,
+        return the indices of the samples in each group to select as the final result
+        """
+        raise NotImplementedError
+
+
+class MaximumLikelihoodRanker(SequenceRanker):
+    """
+    Select the sample with the highest log probabilities, penalized using either
+    a simple length normalization or Google NMT paper's length penalty
+    """
+
+    def __init__(self, length_penalty: Optional[float]):
+        self.length_penalty = length_penalty
+
+    def rank(self, tokens: List[List[List[int]]], sum_logprobs: List[List[float]]):
+        def scores(logprobs, lengths):
+            result = []
+            for logprob, length in zip(logprobs, lengths):
+                if self.length_penalty is None:
+                    penalty = length
+                else:
+                    # from the Google NMT paper
+                    penalty = ((5 + length) / 6) ** self.length_penalty
+                result.append(logprob / penalty)
+            return result
+
+        # get the sequence with the highest score
+        lengths = [[len(t) for t in s] for s in tokens]
+        return [np.argmax(scores(p, l)) for p, l in zip(sum_logprobs, lengths)]
+
+
+class TokenDecoder:
+    def reset(self):
+        """Initialize any stateful variables for decoding a new sequence"""
+
+    def update(
+        self, tokens: mx.array, logits: mx.array, sum_logprobs: mx.array
+    ) -> Tuple[mx.array, bool, mx.array]:
+        """Specify how to select the next token, based on the current trace and logits
+
+        Parameters
+        ----------
+        tokens : mx.array, shape = (n_batch, current_sequence_length)
+            all tokens in the context so far, including the prefix and sot_sequence tokens
+
+        logits : mx.array, shape = (n_batch, vocab_size)
+            per-token logits of the probability distribution at the current step
+
+        sum_logprobs : mx.array, shape = (n_batch)
+            cumulative log probabilities for each sequence
+
+        Returns
+        -------
+        tokens : mx.array, shape = (n_batch, current_sequence_length + 1)
+            the tokens, appended with the selected next token
+
+        completed : bool
+            True if all sequences has reached the end of text
+
+        sum_logprobs: mx.array, shape = (n_batch)
+            updated cumulative log probabilities for each sequence
+
+        """
+        raise NotImplementedError
+
+    def finalize(
+        self, tokens: mx.array, sum_logprobs: mx.array
+    ) -> Tuple[Sequence[Sequence[mx.array]], List[List[float]]]:
+        """Finalize search and return the final candidate sequences
+
+        Parameters
+        ----------
+        tokens : mx.array, shape = (n_audio, n_group, current_sequence_length)
+            all tokens in the context so far, including the prefix and sot_sequence
+
+        sum_logprobs : mx.array, shape = (n_audio, n_group)
+            cumulative log probabilities for each sequence
+
+        Returns
+        -------
+        tokens : Sequence[Sequence[mx.array]], length = n_audio
+            sequence of mx.arrays containing candidate token sequences, for each audio input
+
+        sum_logprobs : List[List[float]], length = n_audio
+            sequence of cumulative log probabilities corresponding to the above
+
+        """
+        raise NotImplementedError
+
+
+@mx.compile
+def categorical(logits, temp):
+    return mx.random.categorical(logits / temp)
+
+
+class GreedyDecoder(TokenDecoder):
+    def __init__(self, temperature: float, eot: int):
+        self.temperature = temperature
+        self.eot = eot
+
+    def update(
+        self, tokens: mx.array, logits: mx.array, sum_logprobs: mx.array
+    ) -> Tuple[mx.array, bool, mx.array]:
+        if self.temperature == 0:
+            next_tokens = logits.argmax(axis=-1)
+        else:
+            next_tokens = categorical(logits, self.temperature)
+
+        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+
+        current_logprobs = logprobs[mx.arange(logprobs.shape[0]), next_tokens]
+        sum_logprobs += current_logprobs * (tokens[:, -1] != self.eot)
+
+        eot_mask = tokens[:, -1] == self.eot
+        next_tokens = next_tokens * (1 - eot_mask) + self.eot * eot_mask
+        tokens = mx.concatenate([tokens, next_tokens[:, None]], axis=-1)
+
+        completed = mx.all(tokens[:, -1] == self.eot)
+        return tokens, completed, sum_logprobs
+
+    def finalize(self, tokens: mx.array, sum_logprobs: mx.array):
+        # make sure each sequence has at least one EOT token at the end
+        tokens = mx.pad(tokens, [(0, 0), (0, 0), (0, 1)], constant_values=self.eot)
+        return tokens, sum_logprobs
+
+
+class LogitFilter:
+    def apply(self, logits: mx.array, tokens: mx.array) -> mx.array:
+        """Apply any filtering or masking to logits
+
+        Parameters
+        ----------
+        logits : mx.array, shape = (n_batch, vocab_size)
+            per-token logits of the probability distribution at the current step
+
+        tokens : mx.array, shape = (n_batch, current_sequence_length)
+            all tokens in the context so far, including the prefix and sot_sequence tokens
+
+        """
+        raise NotImplementedError
+
+
+class SuppressBlank(LogitFilter):
+    def __init__(self, tokenizer: Tokenizer, sample_begin: int, n_vocab: int):
+        self.sample_begin = sample_begin
+        mask = np.zeros(n_vocab, np.float32)
+        mask[tokenizer.encode(" ") + [tokenizer.eot]] = -np.inf
+        self.mask = mx.array(mask)
+
+    def apply(self, logits: mx.array, tokens: mx.array) -> mx.array:
+        if tokens.shape[1] == self.sample_begin:
+            return logits + self.mask
+        return logits
+
+
+class SuppressTokens(LogitFilter):
+    def __init__(self, suppress_tokens: Sequence[int], n_vocab: int):
+        mask = np.zeros(n_vocab, np.float32)
+        mask[list(suppress_tokens)] = -np.inf
+        self.mask = mx.array(mask)
+
+    def apply(self, logits: mx.array, tokens: mx.array) -> mx.array:
+        return logits + self.mask
+
+
+class ApplyTimestampRules(LogitFilter):
+    def __init__(
+        self,
+        tokenizer: Tokenizer,
+        sample_begin: int,
+        max_initial_timestamp_index: Optional[int],
+    ):
+        self.tokenizer = tokenizer
+        self.sample_begin = sample_begin
+        self.max_initial_timestamp_index = max_initial_timestamp_index
+
+    def apply(self, logits: mx.array, tokens: mx.array) -> mx.array:
+        mask = np.zeros(logits.shape, np.float32)
+        # suppress <|notimestamps|> which is handled by without_timestamps
+        if self.tokenizer.no_timestamps is not None:
+            mask[:, self.tokenizer.no_timestamps] = -np.inf
+
+        ## timestamps have to appear in pairs, except directly before EOT; mask logits accordingly
+        tokens = tokens.tolist()
+        for k in range(len(tokens)):
+            seq = tokens[k][self.sample_begin :]
+            last_was_timestamp = (
+                len(seq) >= 1 and seq[-1] >= self.tokenizer.timestamp_begin
+            )
+            penultimate_was_timestamp = (
+                len(seq) < 2 or seq[-2] >= self.tokenizer.timestamp_begin
+            )
+
+            if last_was_timestamp:
+                if penultimate_was_timestamp:  # has to be non-timestamp
+                    mask[k, self.tokenizer.timestamp_begin :] = -np.inf
+                else:  # cannot be normal text tokens
+                    mask[k, : self.tokenizer.eot] = -np.inf
+
+            timestamps = [
+                i for i, v in enumerate(seq) if v > self.tokenizer.timestamp_begin
+            ]
+            if len(timestamps) > 0:
+                # timestamps shouldn't decrease; forbid timestamp tokens smaller than the last
+                # also force each segment to have a nonzero length, to prevent infinite looping
+                last_timestamp = timestamps[-1]
+                if not last_timestamp or penultimate_was_timestamp:
+                    last_timestamp += 1
+                mask[k, self.tokenizer.timestamp_begin : last_timestamp] = -np.inf
+
+        if len(tokens[0]) == self.sample_begin:
+            # suppress generating non-timestamp tokens at the beginning
+            mask[:, : self.tokenizer.timestamp_begin] = -np.inf
+
+            # apply the `max_initial_timestamp` option
+            if self.max_initial_timestamp_index is not None:
+                last_allowed = (
+                    self.tokenizer.timestamp_begin + self.max_initial_timestamp_index
+                )
+                mask[:, last_allowed + 1 :] = -np.inf
+
+        # if sum of probability over timestamps is above any other token, sample timestamp
+        mask = mx.array(mask)
+        logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
+        timestamp_logprob = logprobs[:, self.tokenizer.timestamp_begin :].logsumexp(
+            axis=-1, keepdims=True
+        )
+        max_text_token_logprob = logprobs[:, : self.tokenizer.timestamp_begin].max(
+            axis=-1, keepdims=True
+        )
+        mask[:, : self.tokenizer.timestamp_begin] = mx.where(
+            timestamp_logprob > max_text_token_logprob,
+            -mx.inf,
+            mask[:, : self.tokenizer.timestamp_begin],
+        )
+        return logits + mask
+
+
+class DecodingTask:
+    inference: Inference
+    sequence_ranker: SequenceRanker
+    decoder: TokenDecoder
+    logit_filters: List[LogitFilter]
+
+    def __init__(self, model: "Whisper", options: DecodingOptions):
+        self.model = model
+
+        language = options.language or "en"
+        tokenizer = get_tokenizer(
+            model.is_multilingual,
+            num_languages=model.num_languages,
+            language=language,
+            task=options.task,
+        )
+        self.tokenizer: Tokenizer = tokenizer
+        self.options: DecodingOptions = self._verify_options(options)
+
+        self.n_group: int = options.beam_size or options.best_of or 1
+        self.n_ctx: int = model.dims.n_text_ctx
+        self.sample_len: int = options.sample_len or model.dims.n_text_ctx // 2
+
+        self.sot_sequence: Tuple[int] = tokenizer.sot_sequence
+        if self.options.without_timestamps:
+            self.sot_sequence = tokenizer.sot_sequence_including_notimestamps
+
+        self.initial_tokens: Tuple[int] = self._get_initial_tokens()
+        self.sample_begin: int = len(self.initial_tokens)
+        self.sot_index: int = self.initial_tokens.index(tokenizer.sot)
+
+        # inference: implements the forward pass through the decoder, including kv caching
+        self.inference = Inference(model)
+
+        # sequence ranker: implements how to rank a group of sampled sequences
+        self.sequence_ranker = MaximumLikelihoodRanker(options.length_penalty)
+
+        # decoder: implements how to select the next tokens, given the autoregressive distribution
+        if options.beam_size is not None:
+            raise NotImplementedError("Beam search decoder is not yet implemented")
+        else:
+            self.decoder = GreedyDecoder(options.temperature, tokenizer.eot)
+
+        # logit filters: applies various rules to suppress or penalize certain tokens
+        self.logit_filters = []
+        if self.options.suppress_blank:
+            self.logit_filters.append(
+                SuppressBlank(self.tokenizer, self.sample_begin, model.dims.n_vocab)
+            )
+        if self.options.suppress_tokens:
+            self.logit_filters.append(
+                SuppressTokens(self._get_suppress_tokens(), model.dims.n_vocab)
+            )
+
+        if not options.without_timestamps:
+            precision = CHUNK_LENGTH / model.dims.n_audio_ctx  # usually 0.02 seconds
+            max_initial_timestamp_index = None
+            if options.max_initial_timestamp:
+                max_initial_timestamp_index = round(
+                    self.options.max_initial_timestamp / precision
+                )
+            self.logit_filters.append(
+                ApplyTimestampRules(
+                    tokenizer, self.sample_begin, max_initial_timestamp_index
+                )
+            )
+
+    def _verify_options(self, options: DecodingOptions) -> DecodingOptions:
+        if options.beam_size is not None and options.best_of is not None:
+            raise ValueError("beam_size and best_of can't be given together")
+        if options.temperature == 0:
+            if options.best_of is not None:
+                raise ValueError("best_of with greedy sampling (T=0) is not compatible")
+        if options.patience is not None and options.beam_size is None:
+            raise ValueError("patience requires beam_size to be given")
+        if options.length_penalty is not None and not (
+            0 <= options.length_penalty <= 1
+        ):
+            raise ValueError("length_penalty (alpha) should be a value between 0 and 1")
+
+        return options
+
+    def _get_initial_tokens(self) -> Tuple[int]:
+        tokens = list(self.sot_sequence)
+
+        if prefix := self.options.prefix:
+            prefix_tokens = (
+                self.tokenizer.encode(" " + prefix.strip())
+                if isinstance(prefix, str)
+                else prefix
+            )
+            if self.sample_len is not None:
+                max_prefix_len = self.n_ctx // 2 - self.sample_len
+                prefix_tokens = prefix_tokens[-max_prefix_len:]
+            tokens = tokens + prefix_tokens
+
+        if prompt := self.options.prompt:
+            prompt_tokens = (
+                self.tokenizer.encode(" " + prompt.strip())
+                if isinstance(prompt, str)
+                else prompt
+            )
+            tokens = (
+                [self.tokenizer.sot_prev]
+                + prompt_tokens[-(self.n_ctx // 2 - 1) :]
+                + tokens
+            )
+
+        return tuple(tokens)
+
+    def _get_suppress_tokens(self) -> Tuple[int]:
+        suppress_tokens = self.options.suppress_tokens
+
+        if isinstance(suppress_tokens, str):
+            suppress_tokens = [int(t) for t in suppress_tokens.split(",")]
+
+        if -1 in suppress_tokens:
+            suppress_tokens = [t for t in suppress_tokens if t >= 0]
+            suppress_tokens.extend(self.tokenizer.non_speech_tokens)
+        elif suppress_tokens is None or len(suppress_tokens) == 0:
+            suppress_tokens = []  # interpret empty string as an empty list
+        else:
+            assert isinstance(suppress_tokens, list), "suppress_tokens must be a list"
+
+        suppress_tokens.extend(
+            [
+                self.tokenizer.transcribe,
+                self.tokenizer.translate,
+                self.tokenizer.sot,
+                self.tokenizer.sot_prev,
+                self.tokenizer.sot_lm,
+            ]
+        )
+        if self.tokenizer.no_speech is not None:
+            # no-speech probability is collected separately
+            suppress_tokens.append(self.tokenizer.no_speech)
+
+        return tuple(sorted(set(suppress_tokens)))
+
+    def _get_audio_features(self, mel: mx.array):
+        if self.options.fp16:
+            mel = mel.astype(mx.float16)
+
+        if mel.shape[-2:] == (
+            self.model.dims.n_audio_ctx,
+            self.model.dims.n_audio_state,
+        ):
+            # encoded audio features are given; skip audio encoding
+            audio_features = mel
+        else:
+            audio_features = self.model.encoder(mel)
+
+        if audio_features.dtype != (mx.float16 if self.options.fp16 else mx.float32):
+            raise TypeError(
+                f"audio_features has an incorrect dtype: {audio_features.dtype}"
+            )
+
+        return audio_features
+
+    def _detect_language(self, audio_features: mx.array, tokens: np.array):
+        languages = [self.options.language] * audio_features.shape[0]
+        lang_probs = None
+
+        if self.options.language is None or self.options.task == "lang_id":
+            lang_tokens, lang_probs = self.model.detect_language(
+                audio_features, self.tokenizer
+            )
+            languages = [max(probs, key=probs.get) for probs in lang_probs]
+            if self.options.language is None:
+                # write language tokens
+                tokens[:, self.sot_index + 1] = np.array(lang_tokens)
+
+        return languages, lang_probs
+
+    def _main_loop(self, audio_features: mx.array, tokens: mx.array):
+        n_batch = tokens.shape[0]
+        sum_logprobs = mx.zeros(n_batch)
+
+        def _step(inputs, audio_features, tokens, sum_logprobs):
+            pre_logits = self.inference.logits(inputs, audio_features)
+
+            # consider the logits at the last token only
+            logits = pre_logits[:, -1]
+
+            # apply the logit filters, e.g. for suppressing or applying penalty to
+            for logit_filter in self.logit_filters:
+                logits = logit_filter.apply(logits, tokens)
+
+            # expand the tokens tensor with the selected next tokens
+            tokens, completed, sum_logprobs = self.decoder.update(
+                tokens, logits, sum_logprobs
+            )
+            return tokens, completed, sum_logprobs, pre_logits
+
+        tokens, completed, sum_logprobs, pre_logits = _step(
+            tokens, audio_features, tokens, sum_logprobs
+        )
+        if self.tokenizer.no_speech is not None:  # compute no_speech_probs
+            probs_at_sot = mx.softmax(pre_logits[:, self.sot_index], axis=-1)
+            no_speech_probs = probs_at_sot[:, self.tokenizer.no_speech]
+        else:
+            no_speech_probs = mx.full(n_batch, mx.nan)
+        mx.async_eval(completed, tokens, sum_logprobs, no_speech_probs)
+
+        for i in range(1, self.sample_len):
+            inputs = tokens[:, -1:]
+            if tokens.shape[-1] > self.n_ctx:
+                break
+
+            next_tokens, next_completed, next_sum_logprobs, _ = _step(
+                inputs, audio_features, tokens, sum_logprobs
+            )
+            mx.async_eval(next_completed, next_tokens, next_sum_logprobs)
+            if completed:
+                break
+            tokens = next_tokens
+            completed = next_completed
+            sum_logprobs = next_sum_logprobs
+
+        return tokens, sum_logprobs, no_speech_probs
+
+    def run(self, mel: mx.array) -> List[DecodingResult]:
+        self.inference.reset()
+        self.decoder.reset()
+        tokenizer: Tokenizer = self.tokenizer
+        n_audio: int = mel.shape[0]
+
+        audio_features: mx.array = self._get_audio_features(mel)  # encoder forward pass
+        tokens: mx.array = mx.array(self.initial_tokens)
+        tokens = mx.broadcast_to(tokens, (n_audio, len(self.initial_tokens)))
+
+        # detect language if requested, overwriting the language token
+        languages, language_probs = self._detect_language(audio_features, tokens)
+        if self.options.task == "lang_id":
+            return [
+                DecodingResult(
+                    audio_features=features, language=language, language_probs=probs
+                )
+                for features, language, probs in zip(
+                    audio_features, languages, language_probs
+                )
+            ]
+
+        # repeat tokens by the group size, for beam search or best-of-n sampling
+        if self.n_group > 1:
+            tokens = tokens[:, None, :]
+            tokens = mx.broadcast_to(
+                tokens, [n_audio, self.n_group, len(self.initial_tokens)]
+            )
+            tokens = tokens.reshape((n_audio * self.n_group, len(self.initial_tokens)))
+
+        # call the main sampling loop
+        tokens, sum_logprobs, no_speech_probs = self._main_loop(audio_features, tokens)
+
+        # reshape the tensors to have (n_audio, n_group) as the first two dimensions
+        audio_features = audio_features[:: self.n_group]
+        no_speech_probs = no_speech_probs[:: self.n_group]
+        assert audio_features.shape[0] == len(no_speech_probs) == n_audio
+
+        tokens = tokens.reshape(n_audio, self.n_group, -1)
+        sum_logprobs = sum_logprobs.reshape(n_audio, self.n_group)
+
+        # get the final candidates for each group, and slice between the first sampled token and EOT
+        tokens, sum_logprobs = self.decoder.finalize(tokens, sum_logprobs)
+        tokens = tokens[..., self.sample_begin :]
+
+        # eval and convert to list
+        mx.eval(tokens, sum_logprobs, no_speech_probs)
+        tokens = tokens.tolist()
+        sum_logprobs = sum_logprobs.tolist()
+        no_speech_probs = no_speech_probs.tolist()
+        tokens = [[t[: t.index(tokenizer.eot)] for t in s] for s in tokens]
+
+        # select the top-ranked sample in each group
+        selected = self.sequence_ranker.rank(tokens, sum_logprobs)
+        tokens: List[List[int]] = [t[i] for i, t in zip(selected, tokens)]
+        texts: List[str] = [tokenizer.decode(t).strip() for t in tokens]
+
+        sum_logprobs: List[float] = [lp[i] for i, lp in zip(selected, sum_logprobs)]
+        avg_logprobs: List[float] = [
+            lp / (len(t) + 1) for t, lp in zip(tokens, sum_logprobs)
+        ]
+
+        fields = (
+            texts,
+            languages,
+            tokens,
+            audio_features,
+            avg_logprobs,
+            no_speech_probs,
+        )
+        if len(set(map(len, fields))) != 1:
+            raise RuntimeError(f"inconsistent result lengths: {list(map(len, fields))}")
+
+        return [
+            DecodingResult(
+                audio_features=features,
+                language=language,
+                tokens=tokens,
+                text=text,
+                avg_logprob=avg_logprob,
+                no_speech_prob=no_speech_prob,
+                temperature=self.options.temperature,
+                compression_ratio=compression_ratio(text),
+            )
+            for text, language, tokens, features, avg_logprob, no_speech_prob in zip(
+                *fields
+            )
+        ]
+
+
+def decode(
+    model: "Whisper",
+    mel: mx.array,
+    options: DecodingOptions = DecodingOptions(),
+    **kwargs,
+) -> Union[DecodingResult, List[DecodingResult]]:
+    """
+    Performs decoding of 30-second audio segment(s), provided as Mel spectrogram(s).
+
+    Parameters
+    ----------
+    model: Whisper
+        the Whisper model instance
+
+    mel: mx.array, shape = (80, 3000) or (*, 80, 3000)
+        An array containing the Mel spectrogram(s)
+
+    options: DecodingOptions
+        A dataclass that contains all necessary options for decoding 30-second segments
+
+    Returns
+    -------
+    result: Union[DecodingResult, List[DecodingResult]]
+        The result(s) of decoding contained in `DecodingResult` dataclass instance(s)
+    """
+    if single := mel.ndim == 2:
+        mel = mel[None]
+
+    if kwargs:
+        options = replace(options, **kwargs)
+
+    result = DecodingTask(model, options).run(mel)
+    return result[0] if single else result
+
+
+
+================================================
+FILE: whisper/mlx_whisper/load_models.py
+================================================
+# Copyright © 2023 Apple Inc.
+
+import json
+from pathlib import Path
+
+import mlx.core as mx
+import mlx.nn as nn
+from huggingface_hub import snapshot_download
+from mlx.utils import tree_unflatten
+
+from . import whisper
+
+
+def load_model(
+    path_or_hf_repo: str,
+    dtype: mx.Dtype = mx.float32,
+) -> whisper.Whisper:
+    model_path = Path(path_or_hf_repo)
+    if not model_path.exists():
+        model_path = Path(snapshot_download(repo_id=path_or_hf_repo))
+
+    with open(str(model_path / "config.json"), "r") as f:
+        config = json.loads(f.read())
+        config.pop("model_type", None)
+        quantization = config.pop("quantization", None)
+
+    model_args = whisper.ModelDimensions(**config)
+
+    # Prefer model.safetensors, fall back to weights.safetensors, then weights.npz
+    wf = model_path / "model.safetensors"
+    if not wf.exists():
+        wf = model_path / "weights.safetensors"
+    if not wf.exists():
+        wf = model_path / "weights.npz"
+    weights = mx.load(str(wf))
+
+    model = whisper.Whisper(model_args, dtype)
+
+    if quantization is not None:
+        class_predicate = (
+            lambda p, m: isinstance(m, (nn.Linear, nn.Embedding))
+            and f"{p}.scales" in weights
+        )
+        nn.quantize(model, **quantization, class_predicate=class_predicate)
+
+    weights = tree_unflatten(list(weights.items()))
+    model.update(weights)
+    mx.eval(model.parameters())
+    return model
+
+
+
+================================================
+FILE: whisper/mlx_whisper/requirements.txt
+================================================
+mlx>=0.11
+numba
+numpy
+torch
+tqdm
+more-itertools
+tiktoken
+huggingface_hub
+scipy
+
+
+
+================================================
+FILE: whisper/mlx_whisper/timing.py
+================================================
+# Copyright © 2023 Apple Inc.
+
+import itertools
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, List
+
+import mlx.core as mx
+import numba
+import numpy as np
+from scipy import signal
+
+from .audio import HOP_LENGTH, SAMPLE_RATE, TOKENS_PER_SECOND
+from .tokenizer import Tokenizer
+
+if TYPE_CHECKING:
+    from .model import Whisper
+
+
+def median_filter(x: np.ndarray, filter_width: int):
+    """Apply a median filter of width `filter_width` along the last dimension of `x`"""
+    pad_width = filter_width // 2
+    if x.shape[-1] <= pad_width:
+        # F.pad requires the padding width to be smaller than the input dimension
+        return x
+
+    if (ndim := x.ndim) <= 2:
+        # `F.pad` does not support 1D or 2D inputs for reflect padding but supports 3D and 4D
+        x = x[None, None, :]
+
+    assert (
+        filter_width > 0 and filter_width % 2 == 1
+    ), "`filter_width` should be an odd number"
+
+    x = np.pad(x, ((0, 0), (0, 0), (pad_width, pad_width)), mode="reflect")
+
+    # todo: more efficient version in mlx
+    result = signal.medfilt(x.astype(np.float32), kernel_size=(1, 1, filter_width))[
+        ..., pad_width:-pad_width
+    ]
+
+    if ndim <= 2:
+        result = result[0, 0]
+
+    return result
+
+
+@numba.jit(nopython=True)
+def backtrace(trace: np.ndarray):
+    i = trace.shape[0] - 1
+    j = trace.shape[1] - 1
+    trace[0, :] = 2
+    trace[:, 0] = 1
+
+    result = []
+    while i > 0 or j > 0:
+        result.append((i - 1, j - 1))
+
+        if trace[i, j] == 0:
+            i -= 1
+            j -= 1
+        elif trace[i, j] == 1:
+            i -= 1
+        elif trace[i, j] == 2:
+            j -= 1
+        else:
+            raise ValueError("Unexpected trace[i, j]")
+
+    result = np.array(result)
+    return result[::-1, :].T
+
+
+@numba.jit(nopython=True, parallel=True)
+def dtw_cpu(x: np.ndarray):
+    N, M = x.shape
+    cost = np.ones((N + 1, M + 1), dtype=np.float32) * np.inf
+    trace = -np.ones((N + 1, M + 1), dtype=np.float32)
+
+    cost[0, 0] = 0
+    for j in range(1, M + 1):
+        for i in range(1, N + 1):
+            c0 = cost[i - 1, j - 1]
+            c1 = cost[i - 1, j]
+            c2 = cost[i, j - 1]
+
+            if c0 < c1 and c0 < c2:
+                c, t = c0, 0
+            elif c1 < c0 and c1 < c2:
+                c, t = c1, 1
+            else:
+                c, t = c2, 2
+
+            cost[i, j] = x[i - 1, j - 1] + c
+            trace[i, j] = t
+
+    return backtrace(trace)
+
+
+def dtw(x: np.ndarray) -> np.ndarray:
+    # todo: more efficient version in mlx
+    return dtw_cpu(x)
+
+
+@dataclass
+class WordTiming:
+    word: str
+    tokens: List[int]
+    start: float
+    end: float
+    probability: float
+
+
+def find_alignment(
+    model: "Whisper",
+    tokenizer: Tokenizer,
+    text_tokens: List[int],
+    mel: mx.array,
+    num_frames: int,
+    *,
+    medfilt_width: int = 7,
+    qk_scale: float = 1.0,
+) -> List[WordTiming]:
+    if len(text_tokens) == 0:
+        return []
+
+    tokens = mx.array(
+        [
+            *tokenizer.sot_sequence,
+            tokenizer.no_timestamps,
+            *text_tokens,
+            tokenizer.eot,
+        ]
+    )
+
+    logits, cross_qk = model.forward_with_cross_qk(mel[None, :], tokens[None, :])
+    # consider only the logits associated with predicting text
+    sampled_logits = logits[0][len(tokenizer.sot_sequence) : -2, : tokenizer.eot]
+    token_probs = mx.softmax(sampled_logits, precise=True, axis=-1)
+    text_token_probs = mx.take_along_axis(
+        token_probs, mx.array(text_tokens)[:, None], axis=1
+    ).squeeze(1)
+    text_token_probs = np.array(text_token_probs)
+
+    # heads * tokens * frames
+    weights = mx.stack(
+        [cross_qk[_l][0, _h] for _l, _h in model.alignment_heads.tolist()]
+    )
+    weights = weights[:, :, : num_frames // 2]
+    weights = mx.softmax(weights * qk_scale, axis=-1, precise=True)
+    weights = weights.astype(mx.float32)
+    mean = mx.mean(weights, axis=-2, keepdims=True)
+    std = mx.var(weights, axis=-2, keepdims=True, ddof=0).sqrt()
+    weights = (weights - mean) / std
+    weights = median_filter(np.array(weights), medfilt_width)
+
+    matrix = weights.mean(axis=0)
+    matrix = matrix[len(tokenizer.sot_sequence) : -1]
+    text_indices, time_indices = dtw(-matrix)
+
+    words, word_tokens = tokenizer.split_to_word_tokens(text_tokens + [tokenizer.eot])
+    if len(word_tokens) <= 1:
+        # return on eot only
+        # >>> np.pad([], (1, 0))
+        # array([0.])
+        # This results in crashes when we lookup jump_times with float, like
+        # IndexError: arrays used as indices must be of integer (or boolean) type
+        return []
+    word_boundaries = np.pad(np.cumsum([len(t) for t in word_tokens[:-1]]), (1, 0))
+
+    jumps = np.pad(np.diff(text_indices), (1, 0), constant_values=1).astype(bool)
+    jump_times = time_indices[jumps] / TOKENS_PER_SECOND
+    start_times = jump_times[word_boundaries[:-1]]
+    end_times = jump_times[word_boundaries[1:]]
+    word_probabilities = [
+        np.mean(text_token_probs[i:j])
+        for i, j in zip(word_boundaries[:-1], word_boundaries[1:])
+    ]
+
+    return [
+        WordTiming(word, tokens, start, end, probability)
+        for word, tokens, start, end, probability in zip(
+            words, word_tokens, start_times, end_times, word_probabilities
+        )
+    ]
+
+
+def merge_punctuations(alignment: List[WordTiming], prepended: str, appended: str):
+    # merge prepended punctuations
+    i = len(alignment) - 2
+    j = len(alignment) - 1
+    while i >= 0:
+        previous = alignment[i]
+        following = alignment[j]
+        if previous.word.startswith(" ") and previous.word.strip() in prepended:
+            # prepend it to the following word
+            following.word = previous.word + following.word
+            following.tokens = previous.tokens + following.tokens
+            previous.word = ""
+            previous.tokens = []
+        else:
+            j = i
+        i -= 1
+
+    # merge appended punctuations
+    i = 0
+    j = 1
+    while j < len(alignment):
+        previous = alignment[i]
+        following = alignment[j]
+        if not previous.word.endswith(" ") and following.word in appended:
+            # append it to the previous word
+            previous.word = previous.word + following.word
+            previous.tokens = previous.tokens + following.tokens
+            following.word = ""
+            following.tokens = []
+        else:
+            i = j
+        j += 1
+
+
+def add_word_timestamps(
+    *,
+    segments: List[dict],
+    model: "Whisper",
+    tokenizer: Tokenizer,
+    mel: mx.array,
+    num_frames: int,
+    prepend_punctuations: str = "\"'“¿([{-",
+    append_punctuations: str = "\"'.。,，!！?？:：”)]}、",
+    last_speech_timestamp: float,
+    **kwargs,
+):
+    if len(segments) == 0:
+        return
+
+    text_tokens_per_segment = [
+        [token for token in segment["tokens"] if token < tokenizer.eot]
+        for segment in segments
+    ]
+
+    text_tokens = list(itertools.chain.from_iterable(text_tokens_per_segment))
+    alignment = find_alignment(model, tokenizer, text_tokens, mel, num_frames, **kwargs)
+    word_durations = np.array([t.end - t.start for t in alignment])
+    word_durations = word_durations[word_durations.nonzero()]
+    median_duration = np.median(word_durations) if len(word_durations) > 0 else 0.0
+    median_duration = min(0.7, float(median_duration))
+    max_duration = median_duration * 2
+
+    # hack: truncate long words at sentence boundaries.
+    # a better segmentation algorithm based on VAD should be able to replace this.
+    if len(word_durations) > 0:
+        sentence_end_marks = ".。!！?？"
+        # ensure words at sentence boundaries are not longer than twice the median word duration.
+        for i in range(1, len(alignment)):
+            if alignment[i].end - alignment[i].start > max_duration:
+                if alignment[i].word in sentence_end_marks:
+                    alignment[i].end = alignment[i].start + max_duration
+                elif alignment[i - 1].word in sentence_end_marks:
+                    alignment[i].start = alignment[i].end - max_duration
+
+    merge_punctuations(alignment, prepend_punctuations, append_punctuations)
+
+    time_offset = segments[0]["seek"] * HOP_LENGTH / SAMPLE_RATE
+    word_index = 0
+
+    for segment, text_tokens in zip(segments, text_tokens_per_segment):
+        saved_tokens = 0
+        words = []
+
+        while word_index < len(alignment) and saved_tokens < len(text_tokens):
+            timing = alignment[word_index]
+
+            if timing.word:
+                words.append(
+                    dict(
+                        word=timing.word,
+                        start=round(time_offset + timing.start, 2),
+                        end=round(time_offset + timing.end, 2),
+                        probability=float(timing.probability),
+                    )
+                )
+
+            saved_tokens += len(timing.tokens)
+            word_index += 1
+
+        # hack: truncate long words at segment boundaries.
+        # a better segmentation algorithm based on VAD should be able to replace this.
+        if len(words) > 0:
+            # ensure the first and second word after a pause is not longer than
+            # twice the median word duration.
+            if words[0]["end"] - last_speech_timestamp > median_duration * 4 and (
+                words[0]["end"] - words[0]["start"] > max_duration
+                or (
+                    len(words) > 1
+                    and words[1]["end"] - words[0]["start"] > max_duration * 2
+                )
+            ):
+                if (
+                    len(words) > 1
+                    and words[1]["end"] - words[1]["start"] > max_duration
+                ):
+                    boundary = max(words[1]["end"] / 2, words[1]["end"] - max_duration)
+                    words[0]["end"] = words[1]["start"] = boundary
+                words[0]["start"] = max(0, words[0]["end"] - max_duration)
+
+            # prefer the segment-level start timestamp if the first word is too long.
+            if (
+                segment["start"] < words[0]["end"]
+                and segment["start"] - 0.5 > words[0]["start"]
+            ):
+                words[0]["start"] = max(
+                    0, min(words[0]["end"] - median_duration, segment["start"])
+                )
+            else:
+                segment["start"] = words[0]["start"]
+
+            # prefer the segment-level end timestamp if the last word is too long.
+            if (
+                segment["end"] > words[-1]["start"]
+                and segment["end"] + 0.5 < words[-1]["end"]
+            ):
+                words[-1]["end"] = max(
+                    words[-1]["start"] + median_duration, segment["end"]
+                )
+            else:
+                segment["end"] = words[-1]["end"]
+
+            last_speech_timestamp = segment["end"]
+
+        segment["words"] = words
+
+
+
+================================================
+FILE: whisper/mlx_whisper/tokenizer.py
+================================================
+# Copyright © 2023 Apple Inc.
+
+import base64
+import os
+import string
+from dataclasses import dataclass, field
+from functools import cached_property, lru_cache
+from typing import Dict, List, Optional, Tuple
+
+import tiktoken
+
+LANGUAGES = {
+    "en": "english",
+    "zh": "chinese",
+    "de": "german",
+    "es": "spanish",
+    "ru": "russian",
+    "ko": "korean",
+    "fr": "french",
+    "ja": "japanese",
+    "pt": "portuguese",
+    "tr": "turkish",
+    "pl": "polish",
+    "ca": "catalan",
+    "nl": "dutch",
+    "ar": "arabic",
+    "sv": "swedish",
+    "it": "italian",
+    "id": "indonesian",
+    "hi": "hindi",
+    "fi": "finnish",
+    "vi": "vietnamese",
+    "he": "hebrew",
+    "uk": "ukrainian",
+    "el": "greek",
+    "ms": "malay",
+    "cs": "czech",
+    "ro": "romanian",
+    "da": "danish",
+    "hu": "hungarian",
+    "ta": "tamil",
+    "no": "norwegian",
+    "th": "thai",
+    "ur": "urdu",
+    "hr": "croatian",
+    "bg": "bulgarian",
+    "lt": "lithuanian",
+    "la": "latin",
+    "mi": "maori",
+    "ml": "malayalam",
+    "cy": "welsh",
+    "sk": "slovak",
+    "te": "telugu",
+    "fa": "persian",
+    "lv": "latvian",
+    "bn": "bengali",
+    "sr": "serbian",
+    "az": "azerbaijani",
+    "sl": "slovenian",
+    "kn": "kannada",
+    "et": "estonian",
+    "mk": "macedonian",
+    "br": "breton",
+    "eu": "basque",
+    "is": "icelandic",
+    "hy": "armenian",
+    "ne": "nepali",
+    "mn": "mongolian",
+    "bs": "bosnian",
+    "kk": "kazakh",
+    "sq": "albanian",
+    "sw": "swahili",
+    "gl": "galician",
+    "mr": "marathi",
+    "pa": "punjabi",
+    "si": "sinhala",
+    "km": "khmer",
+    "sn": "shona",
+    "yo": "yoruba",
+    "so": "somali",
+    "af": "afrikaans",
+    "oc": "occitan",
+    "ka": "georgian",
+    "be": "belarusian",
+    "tg": "tajik",
+    "sd": "sindhi",
+    "gu": "gujarati",
+    "am": "amharic",
+    "yi": "yiddish",
+    "lo": "lao",
+    "uz": "uzbek",
+    "fo": "faroese",
+    "ht": "haitian creole",
+    "ps": "pashto",
+    "tk": "turkmen",
+    "nn": "nynorsk",
+    "mt": "maltese",
+    "sa": "sanskrit",
+    "lb": "luxembourgish",
+    "my": "myanmar",
+    "bo": "tibetan",
+    "tl": "tagalog",
+    "mg": "malagasy",
+    "as": "assamese",
+    "tt": "tatar",
+    "haw": "hawaiian",
+    "ln": "lingala",
+    "ha": "hausa",
+    "ba": "bashkir",
+    "jw": "javanese",
+    "su": "sundanese",
+    "yue": "cantonese",
+}
+
+# language code lookup by name, with a few language aliases
+TO_LANGUAGE_CODE = {
+    **{language: code for code, language in LANGUAGES.items()},
+    "burmese": "my",
+    "valencian": "ca",
+    "flemish": "nl",
+    "haitian": "ht",
+    "letzeburgesch": "lb",
+    "pushto": "ps",
+    "panjabi": "pa",
+    "moldavian": "ro",
+    "moldovan": "ro",
+    "sinhalese": "si",
+    "castilian": "es",
+    "mandarin": "zh",
+}
+
+
+@dataclass
+class Tokenizer:
+    """A thin wrapper around `tiktoken` providing quick access to special tokens"""
+
+    encoding: tiktoken.Encoding
+    num_languages: int
+    language: Optional[str] = None
+    task: Optional[str] = None
+    sot_sequence: Tuple[int] = ()
+    special_tokens: Dict[str, int] = field(default_factory=dict)
+
+    def __post_init__(self):
+        for special in self.encoding.special_tokens_set:
+            special_token = self.encoding.encode_single_token(special)
+            self.special_tokens[special] = special_token
+
+        sot: int = self.special_tokens["<|startoftranscript|>"]
+        translate: int = self.special_tokens["<|translate|>"]
+        transcribe: int = self.special_tokens["<|transcribe|>"]
+
+        langs = tuple(LANGUAGES.keys())[: self.num_languages]
+        sot_sequence = [sot]
+        if self.language is not None:
+            sot_sequence.append(sot + 1 + langs.index(self.language))
+        if self.task is not None:
+            task_token: int = transcribe if self.task == "transcribe" else translate
+            sot_sequence.append(task_token)
+
+        self.sot_sequence = tuple(sot_sequence)
+
+    def encode(self, text, **kwargs):
+        return self.encoding.encode(text, **kwargs)
+
+    def decode(self, token_ids: List[int], **kwargs) -> str:
+        token_ids = [t for t in token_ids if t < self.timestamp_begin]
+        return self.encoding.decode(token_ids, **kwargs)
+
+    def decode_with_timestamps(self, token_ids: List[int], **kwargs) -> str:
+        """
+        Timestamp tokens are above other special tokens' id range and are ignored by `decode()`.
+        This method decodes given tokens with timestamps tokens annotated, e.g. "<|1.08|>".
+        """
+        return self.encoding.decode(token_ids, **kwargs)
+
+    @cached_property
+    def eot(self) -> int:
+        return self.encoding.eot_token
+
+    @cached_property
+    def transcribe(self) -> int:
+        return self.special_tokens["<|transcribe|>"]
+
+    @cached_property
+    def translate(self) -> int:
+        return self.special_tokens["<|translate|>"]
+
+    @cached_property
+    def sot(self) -> int:
+        return self.special_tokens["<|startoftranscript|>"]
+
+    @cached_property
+    def sot_lm(self) -> int:
+        return self.special_tokens["<|startoflm|>"]
+
+    @cached_property
+    def sot_prev(self) -> int:
+        return self.special_tokens["<|startofprev|>"]
+
+    @cached_property
+    def no_speech(self) -> int:
+        return self.special_tokens["<|nospeech|>"]
+
+    @cached_property
+    def no_timestamps(self) -> int:
+        return self.special_tokens["<|notimestamps|>"]
+
+    @cached_property
+    def timestamp_begin(self) -> int:
+        return self.special_tokens["<|0.00|>"]
+
+    @cached_property
+    def language_token(self) -> int:
+        """Returns the token id corresponding to the value of the `language` field"""
+        if self.language is None:
+            raise ValueError("This tokenizer does not have language token configured")
+
+        return self.to_language_token(self.language)
+
+    def to_language_token(self, language):
+        if token := self.special_tokens.get(f"<|{language}|>", None):
+            return token
+
+        raise KeyError(f"Language {language} not found in tokenizer.")
+
+    @cached_property
+    def all_language_tokens(self) -> Tuple[int]:
+        result = []
+        for token, token_id in self.special_tokens.items():
+            if token.strip("<|>") in LANGUAGES:
+                result.append(token_id)
+        return tuple(result)[: self.num_languages]
+
+    @cached_property
+    def all_language_codes(self) -> Tuple[str]:
+        return tuple(self.decode([_l]).strip("<|>") for _l in self.all_language_tokens)
+
+    @cached_property
+    def sot_sequence_including_notimestamps(self) -> Tuple[int]:
+        return tuple(list(self.sot_sequence) + [self.no_timestamps])
+
+    @cached_property
+    def non_speech_tokens(self) -> Tuple[int]:
+        """
+        Returns the list of tokens to suppress in order to avoid any speaker tags or non-speech
+        annotations, to prevent sampling texts that are not actually spoken in the audio, e.g.
+
+        - ♪♪♪
+        - ( SPEAKING FOREIGN LANGUAGE )
+        - [DAVID] Hey there,
+
+        keeping basic punctuations like commas, periods, question marks, exclamation points, etc.
+        """
+        symbols = list('"#()*+/:;<=>@[\\]^_`{|}~「」『』')
+        symbols += (
+            "<< >> <<< >>> -- --- -( -[ (' (\" (( )) ((( ))) [[ ]] {{ }} ♪♪ ♪♪♪".split()
+        )
+
+        # symbols that may be a single token or multiple tokens depending on the tokenizer.
+        # In case they're multiple tokens, suppress the first token, which is safe because:
+        # These are between U+2640 and U+267F miscellaneous symbols that are okay to suppress
+        # in generations, and in the 3-byte UTF-8 representation they share the first two bytes.
+        miscellaneous = set("♩♪♫♬♭♮♯")
+        assert all(0x2640 <= ord(c) <= 0x267F for c in miscellaneous)
+
+        # allow hyphens "-" and single quotes "'" between words, but not at the beginning of a word
+        result = {self.encoding.encode(" -")[0], self.encoding.encode(" '")[0]}
+        for symbol in symbols + list(miscellaneous):
+            for tokens in [
+                self.encoding.encode(symbol),
+                self.encoding.encode(" " + symbol),
+            ]:
+                if len(tokens) == 1 or symbol in miscellaneous:
+                    result.add(tokens[0])
+
+        return tuple(sorted(result))
+
+    def split_to_word_tokens(self, tokens: List[int]):
+        if self.language in {"zh", "ja", "th", "lo", "my", "yue"}:
+            # These languages don't typically use spaces, so it is difficult to split words
+            # without morpheme analysis. Here, we instead split words at any
+            # position where the tokens are decoded as valid unicode points
+            return self.split_tokens_on_unicode(tokens)
+
+        return self.split_tokens_on_spaces(tokens)
+
+    def split_tokens_on_unicode(self, tokens: List[int]):
+        decoded_full = self.decode_with_timestamps(tokens)
+        replacement_char = "\ufffd"
+
+        words = []
+        word_tokens = []
+        current_tokens = []
+        unicode_offset = 0
+
+        for token in tokens:
+            current_tokens.append(token)
+            decoded = self.decode_with_timestamps(current_tokens)
+
+            if (
+                replacement_char not in decoded
+                or decoded_full[unicode_offset + decoded.index(replacement_char)]
+                == replacement_char
+            ):
+                words.append(decoded)
+                word_tokens.append(current_tokens)
+                current_tokens = []
+                unicode_offset += len(decoded)
+
+        return words, word_tokens
+
+    def split_tokens_on_spaces(self, tokens: List[int]):
+        subwords, subword_tokens_list = self.split_tokens_on_unicode(tokens)
+        words = []
+        word_tokens = []
+
+        for subword, subword_tokens in zip(subwords, subword_tokens_list):
+            special = subword_tokens[0] >= self.eot
+            with_space = subword.startswith(" ")
+            punctuation = subword.strip() in string.punctuation
+            if special or with_space or punctuation or len(words) == 0:
+                words.append(subword)
+                word_tokens.append(subword_tokens)
+            else:
+                words[-1] = words[-1] + subword
+                word_tokens[-1].extend(subword_tokens)
+
+        return words, word_tokens
+
+
+@lru_cache(maxsize=None)
+def get_encoding(name: str = "gpt2", num_languages: int = 99):
+    vocab_path = os.path.join(os.path.dirname(__file__), "assets", f"{name}.tiktoken")
+    with open(vocab_path) as fid:
+        ranks = {
+            base64.b64decode(token): int(rank)
+            for token, rank in (line.split() for line in fid if line)
+        }
+    n_vocab = len(ranks)
+    special_tokens = {}
+
+    specials = [
+        "<|endoftext|>",
+        "<|startoftranscript|>",
+        *[f"<|{lang}|>" for lang in list(LANGUAGES.keys())[:num_languages]],
+        "<|translate|>",
+        "<|transcribe|>",
+        "<|startoflm|>",
+        "<|startofprev|>",
+        "<|nospeech|>",
+        "<|notimestamps|>",
+        *[f"<|{i * 0.02:.2f}|>" for i in range(1501)],
+    ]
+
+    for token in specials:
+        special_tokens[token] = n_vocab
+        n_vocab += 1
+
+    return tiktoken.Encoding(
+        name=os.path.basename(vocab_path),
+        explicit_n_vocab=n_vocab,
+        pat_str=r"""'s|'t|'re|'ve|'m|'ll|'d| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+""",
+        mergeable_ranks=ranks,
+        special_tokens=special_tokens,
+    )
+
+
+@lru_cache(maxsize=None)
+def get_tokenizer(
+    multilingual: bool,
+    *,
+    num_languages: int = 99,
+    language: Optional[str] = None,
+    task: Optional[str] = None,  # Literal["transcribe", "translate", None]
+) -> Tokenizer:
+    if language is not None:
+        language = language.lower()
+        if language not in LANGUAGES:
+            if language in TO_LANGUAGE_CODE:
+                language = TO_LANGUAGE_CODE[language]
+            else:
+                raise ValueError(f"Unsupported language: {language}")
+
+    if multilingual:
+        encoding_name = "multilingual"
+        language = language or "en"
+        task = task or "transcribe"
+    else:
+        encoding_name = "gpt2"
+        language = None
+        task = None
+
+    encoding = get_encoding(name=encoding_name, num_languages=num_languages)
+
+    return Tokenizer(
+        encoding=encoding, num_languages=num_languages, language=language, task=task
+    )
+
+
+
+================================================
+FILE: whisper/mlx_whisper/torch_whisper.py
+================================================
+# Copyright © 2023 Apple Inc.
+
+import base64
+import gzip
+from dataclasses import dataclass
+from typing import Dict, Iterable, Optional
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torch import Tensor, nn
+
+
+@dataclass
+class ModelDimensions:
+    n_mels: int
+    n_audio_ctx: int
+    n_audio_state: int
+    n_audio_head: int
+    n_audio_layer: int
+    n_vocab: int
+    n_text_ctx: int
+    n_text_state: int
+    n_text_head: int
+    n_text_layer: int
+
+
+class LayerNorm(nn.LayerNorm):
+    def forward(self, x: Tensor) -> Tensor:
+        return super().forward(x.float()).type(x.dtype)
+
+
+class Linear(nn.Linear):
+    def forward(self, x: Tensor) -> Tensor:
+        return F.linear(
+            x,
+            self.weight.to(x.dtype),
+            None if self.bias is None else self.bias.to(x.dtype),
+        )
+
+
+class Conv1d(nn.Conv1d):
+    def _conv_forward(
+        self, x: Tensor, weight: Tensor, bias: Optional[Tensor]
+    ) -> Tensor:
+        return super()._conv_forward(
+            x, weight.to(x.dtype), None if bias is None else bias.to(x.dtype)
+        )
+
+
+def sinusoids(length, channels, max_timescale=10000):
+    """Returns sinusoids for positional embedding"""
+    assert channels % 2 == 0
+    log_timescale_increment = np.log(max_timescale) / (channels // 2 - 1)
+    inv_timescales = torch.exp(-log_timescale_increment * torch.arange(channels // 2))
+    scaled_time = torch.arange(length)[:, np.newaxis] * inv_timescales[np.newaxis, :]
+    return torch.cat([torch.sin(scaled_time), torch.cos(scaled_time)], dim=1)
+
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, n_state: int, n_head: int):
+        super().__init__()
+        self.n_head = n_head
+        self.query = Linear(n_state, n_state)
+        self.key = Linear(n_state, n_state, bias=False)
+        self.value = Linear(n_state, n_state)
+        self.out = Linear(n_state, n_state)
+
+    def forward(
+        self,
+        x: Tensor,
+        xa: Optional[Tensor] = None,
+        mask: Optional[Tensor] = None,
+        kv_cache: Optional[dict] = None,
+    ):
+        q = self.query(x)
+
+        if kv_cache is None or xa is None or self.key not in kv_cache:
+            # hooks, if installed (i.e. kv_cache is not None), will prepend the cached kv tensors;
+            # otherwise, perform key/value projections for self- or cross-attention as usual.
+            k = self.key(x if xa is None else xa)
+            v = self.value(x if xa is None else xa)
+        else:
+            # for cross-attention, calculate keys and values once and reuse in subsequent calls.
+            k = kv_cache[self.key]
+            v = kv_cache[self.value]
+
+        wv, qk = self.qkv_attention(q, k, v, mask)
+        return self.out(wv), qk
+
+    def qkv_attention(
+        self, q: Tensor, k: Tensor, v: Tensor, mask: Optional[Tensor] = None
+    ):
+        n_batch, n_ctx, n_state = q.shape
+        scale = (n_state // self.n_head) ** -0.25
+        q = q.view(*q.shape[:2], self.n_head, -1).permute(0, 2, 1, 3) * scale
+        k = k.view(*k.shape[:2], self.n_head, -1).permute(0, 2, 3, 1) * scale
+        v = v.view(*v.shape[:2], self.n_head, -1).permute(0, 2, 1, 3)
+
+        qk = q @ k
+        if mask is not None:
+            qk = qk + mask[:n_ctx, :n_ctx]
+        qk = qk.float()
+
+        w = F.softmax(qk, dim=-1).to(q.dtype)
+        return (w @ v).permute(0, 2, 1, 3).flatten(start_dim=2), qk.detach()
+
+
+class ResidualAttentionBlock(nn.Module):
+    def __init__(self, n_state: int, n_head: int, cross_attention: bool = False):
+        super().__init__()
+
+        self.attn = MultiHeadAttention(n_state, n_head)
+        self.attn_ln = LayerNorm(n_state)
+
+        self.cross_attn = (
+            MultiHeadAttention(n_state, n_head) if cross_attention else None
+        )
+        self.cross_attn_ln = LayerNorm(n_state) if cross_attention else None
+
+        n_mlp = n_state * 4
+        self.mlp = nn.Sequential(
+            Linear(n_state, n_mlp), nn.GELU(), Linear(n_mlp, n_state)
+        )
+        self.mlp_ln = LayerNorm(n_state)
+
+    def forward(
+        self,
+        x: Tensor,
+        xa: Optional[Tensor] = None,
+        mask: Optional[Tensor] = None,
+        kv_cache: Optional[dict] = None,
+    ):
+        x = x + self.attn(self.attn_ln(x), mask=mask, kv_cache=kv_cache)[0]
+        if self.cross_attn:
+            x = x + self.cross_attn(self.cross_attn_ln(x), xa, kv_cache=kv_cache)[0]
+        x = x + self.mlp(self.mlp_ln(x))
+        return x
+
+
+class AudioEncoder(nn.Module):
+    def __init__(
+        self, n_mels: int, n_ctx: int, n_state: int, n_head: int, n_layer: int
+    ):
+        super().__init__()
+        self.conv1 = Conv1d(n_mels, n_state, kernel_size=3, padding=1)
+        self.conv2 = Conv1d(n_state, n_state, kernel_size=3, stride=2, padding=1)
+        self.register_buffer("positional_embedding", sinusoids(n_ctx, n_state))
+
+        self.blocks: Iterable[ResidualAttentionBlock] = nn.ModuleList(
+            [ResidualAttentionBlock(n_state, n_head) for _ in range(n_layer)]
+        )
+        self.ln_post = LayerNorm(n_state)
+
+    def forward(self, x: Tensor):
+        """
+        x : torch.Tensor, shape = (batch_size, n_mels, n_ctx)
+            the mel spectrogram of the audio
+        """
+        x = F.gelu(self.conv1(x))
+        x = F.gelu(self.conv2(x))
+        x = x.permute(0, 2, 1)
+
+        assert x.shape[1:] == self.positional_embedding.shape, "incorrect audio shape"
+        x = (x + self.positional_embedding).to(x.dtype)
+
+        for block in self.blocks:
+            x = block(x)
+
+        x = self.ln_post(x)
+        return x
+
+
+class TextDecoder(nn.Module):
+    def __init__(
+        self, n_vocab: int, n_ctx: int, n_state: int, n_head: int, n_layer: int
+    ):
+        super().__init__()
+
+        self.token_embedding = nn.Embedding(n_vocab, n_state)
+        self.positional_embedding = nn.Parameter(torch.empty(n_ctx, n_state))
+
+        self.blocks: Iterable[ResidualAttentionBlock] = nn.ModuleList(
+            [
+                ResidualAttentionBlock(n_state, n_head, cross_attention=True)
+                for _ in range(n_layer)
+            ]
+        )
+        self.ln = LayerNorm(n_state)
+
+        mask = torch.empty(n_ctx, n_ctx).fill_(-np.inf).triu_(1)
+        self.register_buffer("mask", mask, persistent=False)
+
+    def forward(self, x: Tensor, xa: Tensor, kv_cache: Optional[dict] = None):
+        """
+        x : torch.LongTensor, shape = (batch_size, <= n_ctx)
+            the text tokens
+        xa : torch.Tensor, shape = (batch_size, n_audio_ctx, n_audio_state)
+            the encoded audio features to be attended on
+        """
+        offset = next(iter(kv_cache.values())).shape[1] if kv_cache else 0
+        x = (
+            self.token_embedding(x)
+            + self.positional_embedding[offset : offset + x.shape[-1]]
+        )
+        x = x.to(xa.dtype)
+
+        for block in self.blocks:
+            x = block(x, xa, mask=self.mask, kv_cache=kv_cache)
+
+        x = self.ln(x)
+        logits = (
+            x @ torch.transpose(self.token_embedding.weight.to(x.dtype), 0, 1)
+        ).float()
+
+        return logits
+
+
+class Whisper(nn.Module):
+    def __init__(self, dims: ModelDimensions):
+        super().__init__()
+        self.dims = dims
+        self.encoder = AudioEncoder(
+            self.dims.n_mels,
+            self.dims.n_audio_ctx,
+            self.dims.n_audio_state,
+            self.dims.n_audio_head,
+            self.dims.n_audio_layer,
+        )
+        self.decoder = TextDecoder(
+            self.dims.n_vocab,
+            self.dims.n_text_ctx,
+            self.dims.n_text_state,
+            self.dims.n_text_head,
+            self.dims.n_text_layer,
+        )
+        # use the last half among the decoder layers for time alignment by default;
+        # to use a specific set of heads, see `set_alignment_heads()` below.
+        all_heads = torch.zeros(
+            self.dims.n_text_layer, self.dims.n_text_head, dtype=torch.bool
+        )
+        all_heads[self.dims.n_text_layer // 2 :] = True
+        self.register_buffer("alignment_heads", all_heads.to_sparse(), persistent=False)
+
+    def set_alignment_heads(self, dump: bytes):
+        array = np.frombuffer(
+            gzip.decompress(base64.b85decode(dump)), dtype=bool
+        ).copy()
+        mask = torch.from_numpy(array).reshape(
+            self.dims.n_text_layer, self.dims.n_text_head
+        )
+        self.register_buffer("alignment_heads", mask.to_sparse(), persistent=False)
+
+    def embed_audio(self, mel: torch.Tensor):
+        return self.encoder(mel)
+
+    def logits(self, tokens: torch.Tensor, audio_features: torch.Tensor):
+        return self.decoder(tokens, audio_features)
+
+    def forward(
+        self, mel: torch.Tensor, tokens: torch.Tensor
+    ) -> Dict[str, torch.Tensor]:
+        return self.decoder(tokens, self.encoder(mel))
+
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
+    @property
+    def is_multilingual(self):
+        return self.dims.n_vocab >= 51865
+
+    @property
+    def num_languages(self):
+        return self.dims.n_vocab - 51765 - int(self.is_multilingual)
+
+    def install_kv_cache_hooks(self, cache: Optional[dict] = None):
+        """
+        The `MultiHeadAttention` module optionally accepts `kv_cache` which stores the key and value
+        tensors calculated for the previous positions. This method returns a dictionary that stores
+        all caches, and the necessary hooks for the key and value projection modules that save the
+        intermediate tensors to be reused during later calculations.
+
+        Returns
+        -------
+        cache : Dict[nn.Module, torch.Tensor]
+            A dictionary object mapping the key/value projection modules to its cache
+        hooks : List[RemovableHandle]
+            List of PyTorch RemovableHandle objects to stop the hooks to be called
+        """
+        cache = {**cache} if cache is not None else {}
+        hooks = []
+
+        def save_to_cache(module, _, output):
+            if module not in cache or output.shape[1] > self.dims.n_text_ctx:
+                # save as-is, for the first token or cross attention
+                cache[module] = output
+            else:
+                cache[module] = torch.cat([cache[module], output], dim=1).detach()
+            return cache[module]
+
+        def install_hooks(layer: nn.Module):
+            if isinstance(layer, MultiHeadAttention):
+                hooks.append(layer.key.register_forward_hook(save_to_cache))
+                hooks.append(layer.value.register_forward_hook(save_to_cache))
+
+        self.decoder.apply(install_hooks)
+        return cache, hooks
+
+
+
+================================================
+FILE: whisper/mlx_whisper/transcribe.py
+================================================
+# Copyright © 2023 Apple Inc.
+
+import sys
+import warnings
+from typing import List, Optional, Tuple, Union
+
+import mlx.core as mx
+import numpy as np
+import tqdm
+
+from .audio import (
+    FRAMES_PER_SECOND,
+    HOP_LENGTH,
+    N_FRAMES,
+    N_SAMPLES,
+    SAMPLE_RATE,
+    log_mel_spectrogram,
+    pad_or_trim,
+)
+from .decoding import DecodingOptions, DecodingResult
+from .load_models import load_model
+from .timing import add_word_timestamps
+from .tokenizer import LANGUAGES, get_tokenizer
+
+
+def _format_timestamp(seconds: float):
+    assert seconds >= 0, "non-negative timestamp expected"
+    milliseconds = round(seconds * 1000.0)
+
+    hours = milliseconds // 3_600_000
+    milliseconds -= hours * 3_600_000
+
+    minutes = milliseconds // 60_000
+    milliseconds -= minutes * 60_000
+
+    seconds = milliseconds // 1_000
+    milliseconds -= seconds * 1_000
+
+    hours_marker = f"{hours:02d}:" if hours > 0 else ""
+    return f"{hours_marker}{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+
+
+def _get_end(segments: List[dict]) -> Optional[float]:
+    return next(
+        (w["end"] for s in reversed(segments) for w in reversed(s["words"])),
+        segments[-1]["end"] if segments else None,
+    )
+
+
+class ModelHolder:
+    model = None
+    model_path = None
+
+    @classmethod
+    def get_model(cls, model_path: str, dtype: mx.Dtype):
+        if cls.model is None or model_path != cls.model_path:
+            cls.model = load_model(model_path, dtype=dtype)
+            cls.model_path = model_path
+        return cls.model
+
+
+def transcribe(
+    audio: Union[str, np.ndarray, mx.array],
+    *,
+    path_or_hf_repo: str = "mlx-community/whisper-turbo",
+    verbose: Optional[bool] = None,
+    temperature: Union[float, Tuple[float, ...]] = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0),
+    compression_ratio_threshold: Optional[float] = 2.4,
+    logprob_threshold: Optional[float] = -1.0,
+    no_speech_threshold: Optional[float] = 0.6,
+    condition_on_previous_text: bool = True,
+    initial_prompt: Optional[str] = None,
+    word_timestamps: bool = False,
+    prepend_punctuations: str = "\"'“¿([{-",
+    append_punctuations: str = "\"'.。,，!！?？:：”)]}、",
+    clip_timestamps: Union[str, List[float]] = "0",
+    hallucination_silence_threshold: Optional[float] = None,
+    **decode_options,
+):
+    """
+    Transcribe an audio file using Whisper
+
+    Parameters
+    ----------
+    audio: Union[str, np.ndarray, mx.array]
+        The path to the audio file to open, or the audio waveform
+
+    path_or_hf_repo: str
+        The localpath to the Whisper model or HF Hub repo with the MLX converted weights.
+
+    verbose: bool
+        Whether to display the text being decoded to the console. If True, displays all the details,
+        If False, displays minimal details. If None, does not display anything
+
+    temperature: Union[float, Tuple[float, ...]]
+        Temperature for sampling. It can be a tuple of temperatures, which will be successively used
+        upon failures according to either `compression_ratio_threshold` or `logprob_threshold`.
+
+    compression_ratio_threshold: float
+        If the gzip compression ratio is above this value, treat as failed
+
+    logprob_threshold: float
+        If the average log probability over sampled tokens is below this value, treat as failed
+
+    no_speech_threshold: float
+        If the no_speech probability is higher than this value AND the average log probability
+        over sampled tokens is below `logprob_threshold`, consider the segment as silent
+
+    condition_on_previous_text: bool
+        if True, the previous output of the model is provided as a prompt for the next window;
+        disabling may make the text inconsistent across windows, but the model becomes less prone to
+        getting stuck in a failure loop, such as repetition looping or timestamps going out of sync.
+
+    word_timestamps: bool
+        Extract word-level timestamps using the cross-attention pattern and dynamic time warping,
+        and include the timestamps for each word in each segment.
+
+    prepend_punctuations: str
+        If word_timestamps is True, merge these punctuation symbols with the next word
+
+    append_punctuations: str
+        If word_timestamps is True, merge these punctuation symbols with the previous word
+
+    initial_prompt: Optional[str]
+        Optional text to provide as a prompt for the first window. This can be used to provide, or
+        "prompt-engineer" a context for transcription, e.g. custom vocabularies or proper nouns
+        to make it more likely to predict those word correctly.
+
+    decode_options: dict
+        Keyword arguments to construct `DecodingOptions` instances
+
+    clip_timestamps: Union[str, List[float]]
+        Comma-separated list start,end,start,end,... timestamps (in seconds) of clips to process.
+        The last end timestamp defaults to the end of the file.
+
+    hallucination_silence_threshold: Optional[float]
+        When word_timestamps is True, skip silent periods longer than this threshold (in seconds)
+        when a possible hallucination is detected
+
+    Returns
+    -------
+    A dictionary containing the resulting text ("text") and segment-level details ("segments"), and
+    the spoken language ("language"), which is detected when `decode_options["language"]` is None.
+    """
+
+    dtype = mx.float16 if decode_options.get("fp16", True) else mx.float32
+    model = ModelHolder.get_model(path_or_hf_repo, dtype)
+
+    # Pad 30-seconds of silence to the input audio, for slicing
+    mel = log_mel_spectrogram(audio, n_mels=model.dims.n_mels, padding=N_SAMPLES)
+    content_frames = mel.shape[-2] - N_FRAMES
+    content_duration = float(content_frames * HOP_LENGTH / SAMPLE_RATE)
+
+    if verbose:
+        system_encoding = sys.getdefaultencoding()
+        if system_encoding != "utf-8":
+            make_safe = lambda x: x.encode(system_encoding, errors="replace").decode(
+                system_encoding
+            )
+        else:
+            make_safe = lambda x: x
+
+    if decode_options.get("language", None) is None:
+        if not model.is_multilingual:
+            decode_options["language"] = "en"
+        else:
+            if verbose:
+                print(
+                    "Detecting language using up to the first 30 seconds. "
+                    "Use the `language` decoding option to specify the language"
+                )
+            mel_segment = pad_or_trim(mel, N_FRAMES, axis=-2).astype(dtype)
+            _, probs = model.detect_language(mel_segment)
+            decode_options["language"] = max(probs, key=probs.get)
+            if verbose is not None:
+                print(
+                    f"Detected language: {LANGUAGES[decode_options['language']].title()}"
+                )
+
+    language: str = decode_options["language"]
+    task: str = decode_options.get("task", "transcribe")
+    tokenizer = get_tokenizer(
+        model.is_multilingual,
+        num_languages=model.num_languages,
+        language=language,
+        task=task,
+    )
+
+    if isinstance(clip_timestamps, str):
+        clip_timestamps = [
+            float(ts) for ts in (clip_timestamps.split(",") if clip_timestamps else [])
+        ]
+    seek_points: List[int] = [round(ts * FRAMES_PER_SECOND) for ts in clip_timestamps]
+    if len(seek_points) == 0:
+        seek_points.append(0)
+    if len(seek_points) % 2 == 1:
+        seek_points.append(content_frames)
+    else:
+        seek_points[-1] = min(content_frames, seek_points[-1])
+    seek_clips: List[Tuple[int, int]] = list(zip(seek_points[::2], seek_points[1::2]))
+
+    punctuation = "\"'“¿([{-\"'.。,，!！?？:：”)]}、"
+
+    if word_timestamps and task == "translate":
+        warnings.warn("Word-level timestamps on translations may not be reliable.")
+
+    def decode_with_fallback(segment: mx.array) -> DecodingResult:
+        temperatures = (
+            [temperature] if isinstance(temperature, (int, float)) else temperature
+        )
+        decode_result = None
+
+        for t in temperatures:
+            kwargs = {**decode_options}
+            if t > 0:
+                # disable beam_size and patience when t > 0
+                kwargs.pop("beam_size", None)
+                kwargs.pop("patience", None)
+            else:
+                # disable best_of when t == 0
+                kwargs.pop("best_of", None)
+
+            options = DecodingOptions(**kwargs, temperature=t)
+            decode_result = model.decode(segment, options)
+
+            needs_fallback = False
+            if (
+                compression_ratio_threshold is not None
+                and decode_result.compression_ratio > compression_ratio_threshold
+            ):
+                needs_fallback = True  # too repetitive
+            if (
+                logprob_threshold is not None
+                and decode_result.avg_logprob < logprob_threshold
+            ):
+                needs_fallback = True  # average log probability is too low
+            if (
+                no_speech_threshold is not None
+                and decode_result.no_speech_prob > no_speech_threshold
+            ):
+                needs_fallback = False  # silence
+            if not needs_fallback:
+                break
+
+        return decode_result
+
+    clip_idx = 0
+    seek = seek_clips[clip_idx][0]
+    input_stride = N_FRAMES // model.dims.n_audio_ctx  # mel frames per output token: 2
+    time_precision = (
+        input_stride * HOP_LENGTH / SAMPLE_RATE
+    )  # time per output token: 0.02 (seconds)
+    all_tokens = []
+    all_segments = []
+    prompt_reset_since = 0
+
+    if initial_prompt is not None:
+        initial_prompt_tokens = tokenizer.encode(" " + initial_prompt.strip())
+        all_tokens.extend(initial_prompt_tokens)
+    else:
+        initial_prompt_tokens = []
+
+    def new_segment(
+        *, start: float, end: float, tokens: mx.array, result: DecodingResult
+    ):
+        tokens = tokens.tolist()
+        text_tokens = [token for token in tokens if token < tokenizer.eot]
+        return {
+            "seek": seek,
+            "start": start,
+            "end": end,
+            "text": tokenizer.decode(text_tokens),
+            "tokens": tokens,
+            "temperature": result.temperature,
+            "avg_logprob": result.avg_logprob,
+            "compression_ratio": result.compression_ratio,
+            "no_speech_prob": result.no_speech_prob,
+        }
+
+    # show the progress bar when verbose is False (if True, transcribed text will be printed)
+    with tqdm.tqdm(
+        total=content_frames, unit="frames", disable=verbose is not False
+    ) as pbar:
+        last_speech_timestamp = 0.0
+        for seek_clip_start, seek_clip_end in seek_clips:
+            while seek < seek_clip_end:
+                time_offset = float(seek * HOP_LENGTH / SAMPLE_RATE)
+                window_end_time = float((seek + N_FRAMES) * HOP_LENGTH / SAMPLE_RATE)
+                segment_size = min(
+                    N_FRAMES, content_frames - seek, seek_clip_end - seek
+                )
+                mel_segment = mel[seek : seek + segment_size]
+                segment_duration = segment_size * HOP_LENGTH / SAMPLE_RATE
+                mel_segment = pad_or_trim(mel_segment, N_FRAMES, axis=-2).astype(dtype)
+
+                decode_options["prompt"] = all_tokens[prompt_reset_since:]
+                result: DecodingResult = decode_with_fallback(mel_segment)
+
+                tokens = np.array(result.tokens)
+
+                if no_speech_threshold is not None:
+                    # no voice activity check
+                    should_skip = result.no_speech_prob > no_speech_threshold
+                    if (
+                        logprob_threshold is not None
+                        and result.avg_logprob > logprob_threshold
+                    ):
+                        # don't skip if the logprob is high enough, despite the no_speech_prob
+                        should_skip = False
+
+                    if should_skip:
+                        seek += (
+                            segment_size  # fast-forward to the next segment boundary
+                        )
+                        continue
+
+                previous_seek = seek
+                current_segments = []
+
+                # anomalous words are very long/short/improbable
+                def word_anomaly_score(word: dict) -> float:
+                    probability = word.get("probability", 0.0)
+                    duration = word["end"] - word["start"]
+                    score = 0.0
+                    if probability < 0.15:
+                        score += 1.0
+                    if duration < 0.133:
+                        score += (0.133 - duration) * 15
+                    if duration > 2.0:
+                        score += duration - 2.0
+                    return score
+
+                def is_segment_anomaly(segment: Optional[dict]) -> bool:
+                    if segment is None or not segment["words"]:
+                        return False
+                    words = [
+                        w for w in segment["words"] if w["word"] not in punctuation
+                    ]
+                    words = words[:8]
+                    score = sum(word_anomaly_score(w) for w in words)
+                    return score >= 3 or score + 0.01 >= len(words)
+
+                def next_words_segment(segments: List[dict]) -> Optional[dict]:
+                    return next((s for s in segments if s["words"]), None)
+
+                timestamp_tokens = tokens >= tokenizer.timestamp_begin
+                single_timestamp_ending = timestamp_tokens[-2:].tolist() == [
+                    False,
+                    True,
+                ]
+
+                consecutive = np.where(
+                    np.logical_and(timestamp_tokens[:-1], timestamp_tokens[1:])
+                )[0]
+                consecutive += 1
+                if len(consecutive) > 0:
+                    # if the output contains two consecutive timestamp tokens
+                    slices = consecutive.tolist()
+                    if single_timestamp_ending:
+                        slices.append(len(tokens))
+
+                    last_slice = 0
+                    for current_slice in slices:
+                        sliced_tokens = tokens[last_slice:current_slice]
+                        start_timestamp_pos = (
+                            sliced_tokens[0].item() - tokenizer.timestamp_begin
+                        )
+                        end_timestamp_pos = (
+                            sliced_tokens[-1].item() - tokenizer.timestamp_begin
+                        )
+                        current_segments.append(
+                            new_segment(
+                                start=time_offset
+                                + start_timestamp_pos * time_precision,
+                                end=time_offset + end_timestamp_pos * time_precision,
+                                tokens=sliced_tokens,
+                                result=result,
+                            )
+                        )
+                        last_slice = current_slice
+
+                    if single_timestamp_ending:
+                        # single timestamp at the end means no speech after the last timestamp.
+                        seek += segment_size
+                    else:
+                        # otherwise, ignore the unfinished segment and seek to the last timestamp
+                        last_timestamp_pos = (
+                            tokens[last_slice - 1].item() - tokenizer.timestamp_begin
+                        )
+                        seek += last_timestamp_pos * input_stride
+                else:
+                    duration = segment_duration
+                    timestamps = tokens[timestamp_tokens.nonzero()[0]]
+                    if (
+                        len(timestamps) > 0
+                        and timestamps[-1].item() != tokenizer.timestamp_begin
+                    ):
+                        # no consecutive timestamps but it has a timestamp; use the last one.
+                        last_timestamp_pos = (
+                            timestamps[-1].item() - tokenizer.timestamp_begin
+                        )
+                        duration = last_timestamp_pos * time_precision
+
+                    current_segments.append(
+                        new_segment(
+                            start=time_offset,
+                            end=time_offset + duration,
+                            tokens=tokens,
+                            result=result,
+                        )
+                    )
+                    seek += segment_size
+
+                if word_timestamps:
+                    add_word_timestamps(
+                        segments=current_segments,
+                        model=model,
+                        tokenizer=tokenizer,
+                        mel=mel_segment,
+                        num_frames=segment_size,
+                        prepend_punctuations=prepend_punctuations,
+                        append_punctuations=append_punctuations,
+                        last_speech_timestamp=last_speech_timestamp,
+                    )
+
+                    if not single_timestamp_ending:
+                        last_word_end = _get_end(current_segments)
+                        if last_word_end is not None and last_word_end > time_offset:
+                            seek = round(last_word_end * FRAMES_PER_SECOND)
+
+                    # skip silence before possible hallucinations
+                    if hallucination_silence_threshold is not None:
+                        threshold = hallucination_silence_threshold
+                        if not single_timestamp_ending:
+                            last_word_end = _get_end(current_segments)
+                            if (
+                                last_word_end is not None
+                                and last_word_end > time_offset
+                            ):
+                                remaining_duration = window_end_time - last_word_end
+                                if remaining_duration > threshold:
+                                    seek = round(last_word_end * FRAMES_PER_SECOND)
+                                else:
+                                    seek = previous_seek + segment_size
+
+                        # if first segment might be a hallucination, skip leading silence
+                        first_segment = next_words_segment(current_segments)
+                        if first_segment is not None and is_segment_anomaly(
+                            first_segment
+                        ):
+                            gap = first_segment["start"] - time_offset
+                            if gap > threshold:
+                                seek = previous_seek + round(gap * FRAMES_PER_SECOND)
+                                continue
+
+                        # skip silence before any possible hallucination that is surrounded
+                        # by silence or more hallucinations
+                        hal_last_end = last_speech_timestamp
+                        for si in range(len(current_segments)):
+                            segment = current_segments[si]
+                            if not segment["words"]:
+                                continue
+                            if is_segment_anomaly(segment):
+                                next_segment = next_words_segment(
+                                    current_segments[si + 1 :]
+                                )
+                                if next_segment is not None:
+                                    hal_next_start = next_segment["words"][0]["start"]
+                                else:
+                                    hal_next_start = time_offset + segment_duration
+                                silence_before = (
+                                    segment["start"] - hal_last_end > threshold
+                                    or segment["start"] < threshold
+                                    or segment["start"] - time_offset < 2.0
+                                )
+                                silence_after = (
+                                    hal_next_start - segment["end"] > threshold
+                                    or is_segment_anomaly(next_segment)
+                                    or window_end_time - segment["end"] < 2.0
+                                )
+                                if silence_before and silence_after:
+                                    seek = round(
+                                        max(time_offset + 1, segment["start"])
+                                        * FRAMES_PER_SECOND
+                                    )
+                                    if content_duration - segment["end"] < threshold:
+                                        seek = content_frames
+                                    current_segments[si:] = []
+                                    break
+                            hal_last_end = segment["end"]
+
+                    last_word_end = _get_end(current_segments)
+                    if last_word_end is not None:
+                        last_speech_timestamp = last_word_end
+
+                if verbose:
+                    for segment in current_segments:
+                        start, end, text = (
+                            segment["start"],
+                            segment["end"],
+                            segment["text"],
+                        )
+                        line = f"[{_format_timestamp(start)} --> {_format_timestamp(end)}] {text}"
+                        print(make_safe(line))
+
+                # if a segment is instantaneous or does not contain text, clear it
+                for i, segment in enumerate(current_segments):
+                    if (
+                        segment["start"] == segment["end"]
+                        or segment["text"].strip() == ""
+                    ):
+                        segment["text"] = ""
+                        segment["tokens"] = []
+                        segment["words"] = []
+
+                all_segments.extend(
+                    [
+                        {"id": i, **segment}
+                        for i, segment in enumerate(
+                            current_segments, start=len(all_segments)
+                        )
+                    ]
+                )
+                all_tokens.extend(
+                    [
+                        token
+                        for segment in current_segments
+                        for token in segment["tokens"]
+                    ]
+                )
+
+                if not condition_on_previous_text or result.temperature > 0.5:
+                    # do not feed the prompt tokens if a high temperature was used
+                    prompt_reset_since = len(all_tokens)
+
+                # update progress bar
+                pbar.update(min(content_frames, seek) - previous_seek)
+
+    return dict(
+        text=tokenizer.decode(all_tokens[len(initial_prompt_tokens) :]),
+        segments=all_segments,
+        language=language,
+    )
+
+
+
+================================================
+FILE: whisper/mlx_whisper/whisper.py
+================================================
+# Copyright © 2023 Apple Inc.
+
+import base64
+import gzip
+import math
+from dataclasses import dataclass
+from typing import Union
+
+import mlx.core as mx
+import mlx.nn as nn
+import numpy as np
+
+from .decoding import decode as decode_function
+from .decoding import detect_language as detect_language_function
+
+
+@dataclass
+class ModelDimensions:
+    n_mels: int
+    n_audio_ctx: int
+    n_audio_state: int
+    n_audio_head: int
+    n_audio_layer: int
+    n_vocab: int
+    n_text_ctx: int
+    n_text_state: int
+    n_text_head: int
+    n_text_layer: int
+
+
+def sinusoids(length, channels, max_timescale=10000):
+    """Returns sinusoids for positional embedding"""
+    assert channels % 2 == 0
+    log_timescale_increment = math.log(max_timescale) / (channels // 2 - 1)
+    inv_timescales = mx.exp(-log_timescale_increment * mx.arange(channels // 2))
+    scaled_time = mx.arange(length)[:, None] * inv_timescales[None, :]
+    return mx.concatenate([mx.sin(scaled_time), mx.cos(scaled_time)], axis=1)
+
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, n_state: int, n_head: int):
+        super().__init__()
+        self.n_head = n_head
+        self.query = nn.Linear(n_state, n_state)
+        self.key = nn.Linear(n_state, n_state, bias=False)
+        self.value = nn.Linear(n_state, n_state)
+        self.out = nn.Linear(n_state, n_state)
+
+    def __call__(
+        self,
+        x,
+        xa=None,
+        mask=None,
+        kv_cache=None,
+    ):
+        q = self.query(x)
+
+        if xa is None:
+            k = self.key(x)
+            v = self.value(x)
+            if kv_cache is not None:
+                k = mx.concatenate([kv_cache[0], k], axis=1)
+                v = mx.concatenate([kv_cache[1], v], axis=1)
+        elif kv_cache is None:
+            k = self.key(xa)
+            v = self.value(xa)
+        else:
+            k, v = kv_cache
+
+        wv, qk = self.qkv_attention(q, k, v, mask)
+        return self.out(wv), (k, v), qk
+
+    def qkv_attention(self, q, k, v, mask=None):
+        n_batch, n_ctx, n_state = q.shape
+        scale = (n_state // self.n_head) ** -0.25
+        q = q.reshape(*q.shape[:2], self.n_head, -1).transpose(0, 2, 1, 3) * scale
+        k = k.reshape(*k.shape[:2], self.n_head, -1).transpose(0, 2, 3, 1) * scale
+        v = v.reshape(*v.shape[:2], self.n_head, -1).transpose(0, 2, 1, 3)
+
+        qk = q @ k
+        if mask is not None:
+            qk = qk + mask[:n_ctx, :n_ctx]
+
+        w = mx.softmax(qk, axis=-1, precise=True)
+        out = (w @ v).transpose(0, 2, 1, 3)
+        out = out.reshape(n_batch, n_ctx, n_state)
+        return out, qk
+
+
+class ResidualAttentionBlock(nn.Module):
+    def __init__(self, n_state: int, n_head: int, cross_attention: bool = False):
+        super().__init__()
+
+        self.attn = MultiHeadAttention(n_state, n_head)
+        self.attn_ln = nn.LayerNorm(n_state)
+
+        self.cross_attn = (
+            MultiHeadAttention(n_state, n_head) if cross_attention else None
+        )
+        self.cross_attn_ln = nn.LayerNorm(n_state) if cross_attention else None
+
+        n_mlp = n_state * 4
+        self.mlp1 = nn.Linear(n_state, n_mlp)
+        self.mlp2 = nn.Linear(n_mlp, n_state)
+        self.mlp_ln = nn.LayerNorm(n_state)
+
+    def __call__(self, x, xa=None, mask=None, kv_cache=None):
+        kv, cross_kv = kv_cache if kv_cache else (None, None)
+        y, kv, _ = self.attn(self.attn_ln(x), mask=mask, kv_cache=kv)
+        x += y
+        cross_qk = None
+        if self.cross_attn:
+            y, cross_kv, cross_qk = self.cross_attn(
+                self.cross_attn_ln(x), xa, kv_cache=cross_kv
+            )
+            x += y
+        x = x + self.mlp2(nn.gelu(self.mlp1(self.mlp_ln(x))))
+        return x, (kv, cross_kv), cross_qk
+
+
+class AudioEncoder(nn.Module):
+    def __init__(
+        self,
+        n_mels: int,
+        n_ctx: int,
+        n_state: int,
+        n_head: int,
+        n_layer: int,
+        dtype: mx.Dtype = mx.float16,
+    ):
+        super().__init__()
+        self.conv1 = nn.Conv1d(n_mels, n_state, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv1d(n_state, n_state, kernel_size=3, stride=2, padding=1)
+        self._positional_embedding = sinusoids(n_ctx, n_state).astype(dtype)
+
+        self.blocks = [ResidualAttentionBlock(n_state, n_head) for _ in range(n_layer)]
+        self.ln_post = nn.LayerNorm(n_state)
+
+    def __call__(self, x):
+        x = nn.gelu(self.conv1(x))
+        x = nn.gelu(self.conv2(x))
+        assert x.shape[1:] == self._positional_embedding.shape, "incorrect audio shape"
+        x = x + self._positional_embedding
+
+        for block in self.blocks:
+            x, _, _ = block(x)
+
+        x = self.ln_post(x)
+        return x
+
+
+class TextDecoder(nn.Module):
+    def __init__(
+        self,
+        n_vocab: int,
+        n_ctx: int,
+        n_state: int,
+        n_head: int,
+        n_layer: int,
+        dtype: mx.Dtype = mx.float16,
+    ):
+        super().__init__()
+
+        self.token_embedding = nn.Embedding(n_vocab, n_state)
+        self.positional_embedding = mx.zeros((n_ctx, n_state))
+
+        self.blocks = [
+            ResidualAttentionBlock(n_state, n_head, cross_attention=True)
+            for _ in range(n_layer)
+        ]
+        self.ln = nn.LayerNorm(n_state)
+        self._mask = nn.MultiHeadAttention.create_additive_causal_mask(n_ctx).astype(
+            dtype
+        )
+
+    def __call__(self, x, xa, kv_cache=None):
+        """
+        x : mx.array, shape = (batch_size, <= n_ctx)
+            the text tokens
+        xa : mx.array, shape = (batch_size, n_audio_ctx, n_audio_state)
+            the encoded audio features to be attended on
+        """
+        offset = kv_cache[0][0][0].shape[1] if kv_cache else 0
+        x = (
+            self.token_embedding(x)
+            + self.positional_embedding[offset : offset + x.shape[-1]]
+        )
+
+        if kv_cache is None:
+            kv_cache = [None] * len(self.blocks)
+        cross_qk = [None] * len(self.blocks)
+        for e, block in enumerate(self.blocks):
+            x, kv_cache[e], cross_qk[e] = block(
+                x, xa, mask=self._mask, kv_cache=kv_cache[e]
+            )
+
+        x = self.ln(x)
+        return self.token_embedding.as_linear(x), kv_cache, cross_qk
+
+
+class Whisper(nn.Module):
+    def __init__(self, dims: ModelDimensions, dtype: mx.Dtype = mx.float16):
+        super().__init__()
+        self.dims = dims
+        self.encoder = AudioEncoder(
+            self.dims.n_mels,
+            self.dims.n_audio_ctx,
+            self.dims.n_audio_state,
+            self.dims.n_audio_head,
+            self.dims.n_audio_layer,
+            dtype,
+        )
+        self.decoder = TextDecoder(
+            self.dims.n_vocab,
+            self.dims.n_text_ctx,
+            self.dims.n_text_state,
+            self.dims.n_text_head,
+            self.dims.n_text_layer,
+            dtype,
+        )
+        # use the last half among the decoder layers for time alignment by default;
+        # to use a specific set of heads, see `set_alignment_heads()` below.
+        all_heads = np.zeros(
+            (self.dims.n_text_layer, self.dims.n_text_head), dtype=bool
+        )
+        all_heads[self.dims.n_text_layer // 2 :] = True
+        self.alignment_heads = mx.array(np.asarray(all_heads.nonzero()).T)
+
+    def set_alignment_heads(self, dump: Union[bytes, np.ndarray]):
+        if isinstance(dump, np.ndarray):
+            self.alignment_heads = mx.array(dump)
+        elif isinstance(dump, bytes):
+            array = np.frombuffer(
+                gzip.decompress(base64.b85decode(dump)), dtype=bool
+            ).copy()
+            mask = array.reshape(self.dims.n_text_layer, self.dims.n_text_head)
+            self.alignment_heads = mx.array(np.asarray(mask.nonzero()).T)
+        else:
+            raise ValueError(
+                f"Invalid type for `dump`: {type(dump)}. Expected a np.ndarray or base85-encoded bytes containing"
+                " alignment_head information"
+            )
+
+    def embed_audio(self, mel):
+        return self.encoder(mel)
+
+    def logits(self, tokens, audio_features):
+        return self.decoder(tokens, audio_features)[0]
+
+    def forward_with_cross_qk(self, mel, tokens):
+        logits, _, cross_qk = self.decoder(tokens, self.encoder(mel))
+        return logits, cross_qk
+
+    def __call__(self, mel, tokens):
+        return self.decoder(tokens, self.encoder(mel))[0]
+
+    @property
+    def is_multilingual(self):
+        return self.dims.n_vocab >= 51865
+
+    @property
+    def num_languages(self):
+        return self.dims.n_vocab - 51765 - int(self.is_multilingual)
+
+    detect_language = detect_language_function
+    decode = decode_function
+
+
+
+================================================
+FILE: whisper/mlx_whisper/writers.py
+================================================
+# Copyright © 2024 Apple Inc.
+
+import json
+import pathlib
+import re
+from typing import Callable, List, Optional, TextIO
+
+
+def format_timestamp(
+    seconds: float, always_include_hours: bool = False, decimal_marker: str = "."
+):
+    assert seconds >= 0, "non-negative timestamp expected"
+    milliseconds = round(seconds * 1000.0)
+
+    hours = milliseconds // 3_600_000
+    milliseconds -= hours * 3_600_000
+
+    minutes = milliseconds // 60_000
+    milliseconds -= minutes * 60_000
+
+    seconds = milliseconds // 1_000
+    milliseconds -= seconds * 1_000
+
+    hours_marker = f"{hours:02d}:" if always_include_hours or hours > 0 else ""
+    return (
+        f"{hours_marker}{minutes:02d}:{seconds:02d}{decimal_marker}{milliseconds:03d}"
+    )
+
+
+def get_start(segments: List[dict]) -> Optional[float]:
+    return next(
+        (w["start"] for s in segments for w in s["words"]),
+        segments[0]["start"] if segments else None,
+    )
+
+
+class ResultWriter:
+    extension: str
+
+    def __init__(self, output_dir: str):
+        self.output_dir = output_dir
+
+    def __call__(
+        self, result: dict, output_name: str, options: Optional[dict] = None, **kwargs
+    ):
+        output_path = (pathlib.Path(self.output_dir) / output_name).with_suffix(
+            f".{self.extension}"
+        )
+
+        with output_path.open("wt", encoding="utf-8") as f:
+            self.write_result(result, file=f, options=options, **kwargs)
+
+    def write_result(
+        self, result: dict, file: TextIO, options: Optional[dict] = None, **kwargs
+    ):
+        raise NotImplementedError
+
+
+class WriteTXT(ResultWriter):
+    extension: str = "txt"
+
+    def write_result(
+        self, result: dict, file: TextIO, options: Optional[dict] = None, **kwargs
+    ):
+        for segment in result["segments"]:
+            print(segment["text"].strip(), file=file, flush=True)
+
+
+class SubtitlesWriter(ResultWriter):
+    always_include_hours: bool
+    decimal_marker: str
+
+    def iterate_result(
+        self,
+        result: dict,
+        options: Optional[dict] = None,
+        *,
+        max_line_width: Optional[int] = None,
+        max_line_count: Optional[int] = None,
+        highlight_words: bool = False,
+        max_words_per_line: Optional[int] = None,
+    ):
+        options = options or {}
+        max_line_width = max_line_width or options.get("max_line_width")
+        max_line_count = max_line_count or options.get("max_line_count")
+        highlight_words = highlight_words or options.get("highlight_words", False)
+        max_words_per_line = max_words_per_line or options.get("max_words_per_line")
+        preserve_segments = max_line_count is None or max_line_width is None
+        max_line_width = max_line_width or 1000
+        max_words_per_line = max_words_per_line or 1000
+
+        def iterate_subtitles():
+            line_len = 0
+            line_count = 1
+            # the next subtitle to yield (a list of word timings with whitespace)
+            subtitle: List[dict] = []
+            last: float = get_start(result["segments"]) or 0.0
+            for segment in result["segments"]:
+                chunk_index = 0
+                words_count = max_words_per_line
+                while chunk_index < len(segment["words"]):
+                    remaining_words = len(segment["words"]) - chunk_index
+                    if max_words_per_line > len(segment["words"]) - chunk_index:
+                        words_count = remaining_words
+                    for i, original_timing in enumerate(
+                        segment["words"][chunk_index : chunk_index + words_count]
+                    ):
+                        timing = original_timing.copy()
+                        long_pause = (
+                            not preserve_segments and timing["start"] - last > 3.0
+                        )
+                        has_room = line_len + len(timing["word"]) <= max_line_width
+                        seg_break = i == 0 and len(subtitle) > 0 and preserve_segments
+                        if (
+                            line_len > 0
+                            and has_room
+                            and not long_pause
+                            and not seg_break
+                        ):
+                            # line continuation
+                            line_len += len(timing["word"])
+                        else:
+                            # new line
+                            timing["word"] = timing["word"].strip()
+                            if (
+                                len(subtitle) > 0
+                                and max_line_count is not None
+                                and (long_pause or line_count >= max_line_count)
+                                or seg_break
+                            ):
+                                # subtitle break
+                                yield subtitle
+                                subtitle = []
+                                line_count = 1
+                            elif line_len > 0:
+                                # line break
+                                line_count += 1
+                                timing["word"] = "\n" + timing["word"]
+                            line_len = len(timing["word"].strip())
+                        subtitle.append(timing)
+                        last = timing["start"]
+                    chunk_index += max_words_per_line
+            if len(subtitle) > 0:
+                yield subtitle
+
+        if len(result["segments"]) > 0 and "words" in result["segments"][0]:
+            for subtitle in iterate_subtitles():
+                subtitle_start = self.format_timestamp(subtitle[0]["start"])
+                subtitle_end = self.format_timestamp(subtitle[-1]["end"])
+                subtitle_text = "".join([word["word"] for word in subtitle])
+                if highlight_words:
+                    last = subtitle_start
+                    all_words = [timing["word"] for timing in subtitle]
+                    for i, this_word in enumerate(subtitle):
+                        start = self.format_timestamp(this_word["start"])
+                        end = self.format_timestamp(this_word["end"])
+                        if last != start:
+                            yield last, start, subtitle_text
+
+                        yield start, end, "".join(
+                            [
+                                (
+                                    re.sub(r"^(\s*)(.*)$", r"\1<u>\2</u>", word)
+                                    if j == i
+                                    else word
+                                )
+                                for j, word in enumerate(all_words)
+                            ]
+                        )
+                        last = end
+                else:
+                    yield subtitle_start, subtitle_end, subtitle_text
+        else:
+            for segment in result["segments"]:
+                segment_start = self.format_timestamp(segment["start"])
+                segment_end = self.format_timestamp(segment["end"])
+                segment_text = segment["text"].strip().replace("-->", "->")
+                yield segment_start, segment_end, segment_text
+
+    def format_timestamp(self, seconds: float):
+        return format_timestamp(
+            seconds=seconds,
+            always_include_hours=self.always_include_hours,
+            decimal_marker=self.decimal_marker,
+        )
+
+
+class WriteVTT(SubtitlesWriter):
+    extension: str = "vtt"
+    always_include_hours: bool = False
+    decimal_marker: str = "."
+
+    def write_result(
+        self, result: dict, file: TextIO, options: Optional[dict] = None, **kwargs
+    ):
+        print("WEBVTT\n", file=file)
+        for start, end, text in self.iterate_result(result, options, **kwargs):
+            print(f"{start} --> {end}\n{text}\n", file=file, flush=True)
+
+
+class WriteSRT(SubtitlesWriter):
+    extension: str = "srt"
+    always_include_hours: bool = True
+    decimal_marker: str = ","
+
+    def write_result(
+        self, result: dict, file: TextIO, options: Optional[dict] = None, **kwargs
+    ):
+        for i, (start, end, text) in enumerate(
+            self.iterate_result(result, options, **kwargs), start=1
+        ):
+            print(f"{i}\n{start} --> {end}\n{text}\n", file=file, flush=True)
+
+
+class WriteTSV(ResultWriter):
+    """
+    Write a transcript to a file in TSV (tab-separated values) format containing lines like:
+    <start time in integer milliseconds>\t<end time in integer milliseconds>\t<transcript text>
+
+    Using integer milliseconds as start and end times means there's no chance of interference from
+    an environment setting a language encoding that causes the decimal in a floating point number
+    to appear as a comma; also is faster and more efficient to parse & store, e.g., in C++.
+    """
+
+    extension: str = "tsv"
+
+    def write_result(
+        self, result: dict, file: TextIO, options: Optional[dict] = None, **kwargs
+    ):
+        print("start", "end", "text", sep="\t", file=file)
+        for segment in result["segments"]:
+            print(round(1000 * segment["start"]), file=file, end="\t")
+            print(round(1000 * segment["end"]), file=file, end="\t")
+            print(segment["text"].strip().replace("\t", " "), file=file, flush=True)
+
+
+class WriteJSON(ResultWriter):
+    extension: str = "json"
+
+    def write_result(
+        self, result: dict, file: TextIO, options: Optional[dict] = None, **kwargs
+    ):
+        json.dump(result, file, ensure_ascii=False)
+
+
+def get_writer(
+    output_format: str, output_dir: str
+) -> Callable[[dict, TextIO, dict], None]:
+    writers = {
+        "txt": WriteTXT,
+        "vtt": WriteVTT,
+        "srt": WriteSRT,
+        "tsv": WriteTSV,
+        "json": WriteJSON,
+    }
+
+    if output_format == "all":
+        all_writers = [writer(output_dir) for writer in writers.values()]
+
+        def write_all(
+            result: dict, file: TextIO, options: Optional[dict] = None, **kwargs
+        ):
+            for writer in all_writers:
+                writer(result, file, options, **kwargs)
+
+        return write_all
+
+    return writers[output_format](output_dir)
+
+
+
+================================================
+FILE: whisper/mlx_whisper/assets/download_alice.sh
+================================================
+#!/bin/bash
+
+audio_file=$HOME/.cache/whisper/alice.mp3
+echo $audio_file
+zipf=alice_in_wonderland_librivox_64kb_mp3.zip
+url=https://www.archive.org/download/alice_in_wonderland_librivox/
+curl -LO $url/$zipf
+unzip $zipf
+mv wonderland_ch_02_64kb.mp3 $audio_file
+rm wonderland_* $zipf
+
+
+
+================================================
+FILE: whisper/mlx_whisper/assets/mel_filters.npz
+================================================
+[Binary file]
+

@@ -1,0 +1,17 @@
+mlx>=0.11
+numpy
+tqdm
+tiktoken
+huggingface_hub
+numba
+scipy
+
+[dev]
+pytest
+black
+isort
+mypy
+
+[notebook]
+ipykernel
+jupyter

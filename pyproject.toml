@@ -1,0 +1,93 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "whisper-mlx"
+version = "0.5.0"
+description = "Fast Whisper speech recognition on Apple Silicon with batched decoding"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Apple Inc."},
+    {name = "Mustafa Aljadery"},
+    {name = "Siddharth Sharma"},
+]
+keywords = [
+    "whisper",
+    "speech recognition",
+    "transcription",
+    "mlx",
+    "apple silicon",
+    "machine learning",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "mlx>=0.11",
+    "numpy",
+    "tqdm",
+    "tiktoken",
+    "huggingface_hub",
+    "numba",
+    "scipy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "black",
+    "isort",
+    "mypy",
+]
+notebook = [
+    "ipykernel",
+    "jupyter",
+]
+
+[project.scripts]
+whisper-mlx = "whisper_mlx.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/ml-explore/mlx-examples"
+Documentation = "https://github.com/ml-explore/mlx-examples/tree/main/whisper"
+Repository = "https://github.com/ml-explore/mlx-examples"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["whisper_mlx*"]
+
+[tool.setuptools.package-data]
+whisper_mlx = ["assets/*.npz", "assets/*.tiktoken"]
+
+[tool.black]
+line-length = 88
+target-version = ["py310", "py311", "py312"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "ipykernel>=7.1.0",
+    "ipywidgets>=8.1.8",
+    "matplotlib>=3.10.8",
+    "psutil>=7.2.1",
+]
