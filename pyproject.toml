@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "whisper-mlx"
-version = "0.5.0"
-description = "Fast Whisper speech recognition on Apple Silicon with batched decoding"
+name = "vayu"
+version = "1.0.0"
+description = "Vayu - The fastest Whisper implementation on Apple Silicon"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
@@ -15,12 +15,14 @@ authors = [
     {name = "Behnam Ebrahimi"},
 ]
 keywords = [
+    "vayu",
     "whisper",
     "speech recognition",
     "transcription",
     "mlx",
     "apple silicon",
     "machine learning",
+    "fast",
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -59,7 +61,8 @@ notebook = [
 ]
 
 [project.scripts]
-whisper-mlx = "whisper_mlx.cli:main"
+vayu = "whisper_mlx.cli:main"
+whisper-mlx = "whisper_mlx.cli:main"  # Backward compatibility
 
 [project.urls]
 Homepage = "https://github.com/ml-explore/mlx-examples"

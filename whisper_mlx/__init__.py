@@ -1,7 +1,9 @@
 # Copyright © 2023-2024 Apple Inc. and contributors
 
 """
-Whisper MLX - Fast speech recognition on Apple Silicon
+Vayu (وایو) - The fastest Whisper implementation on Apple Silicon
+
+Named after the ancient Persian god of wind — the swiftest force in nature.
 
 A unified implementation combining ml-explore/mlx-examples/whisper features
 with lightning-whisper-mlx batched decoding for optimal performance.
@@ -33,7 +35,7 @@ Quick Start:
     )
 
 CLI Usage:
-    python -m whisper_mlx audio.mp3 --model mlx-community/whisper-turbo --batch-size 6
+    vayu audio.mp3 --model mlx-community/whisper-turbo --batch-size 6
 """
 
 from .audio import (
@@ -71,7 +73,7 @@ from .speculative import (
     parallel_chunk_transcribe,
 )
 
-__version__ = "0.5.0"
+__version__ = "1.0.0"
 
 __all__ = [
     # Main transcription function

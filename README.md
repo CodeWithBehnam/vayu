@@ -1,13 +1,15 @@
-# Whisper MLX
+# Vayu (وایو)
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos/)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1%2FM2%2FM3%2FM4-orange.svg)](https://support.apple.com/en-us/HT211814)
 [![MLX](https://img.shields.io/badge/MLX-0.11+-purple.svg)](https://github.com/ml-explore/mlx)
-[![Version](https://img.shields.io/badge/version-0.5.0-brightgreen.svg)](https://github.com/ml-explore/mlx-examples)
+[![Version](https://img.shields.io/badge/version-1.0.0-brightgreen.svg)](https://github.com/ml-explore/mlx-examples)
 
-Fast Whisper speech recognition on Apple Silicon with batched decoding.
+**The fastest Whisper implementation on Apple Silicon.**
+
+> **Vayu** (وایو) is the ancient Persian god of wind — the swiftest force in nature. In Zoroastrian mythology, Vayu represents the divine wind that moves faster than any earthly creature. We chose this name because this implementation outperforms even "lightning-fast" alternatives, making Vayu the most fitting name for the fastest Whisper on Apple Silicon.
 
 ## Acknowledgments
 
@@ -36,7 +38,7 @@ This unified implementation combines the best of both worlds:
 ```bash
 # Clone the repository
 git clone <repo-url>
-cd whisper-mlx
+cd vayu
 
 # Install the package
 pip install -e .
@@ -95,22 +97,22 @@ for segment in result["segments"]:
 
 ```bash
 # Basic transcription
-whisper-mlx audio.mp3
+vayu audio.mp3
 
 # With batched decoding (faster)
-whisper-mlx audio.mp3 --batch-size 12
+vayu audio.mp3 --batch-size 12
 
 # Specify model and output format
-whisper-mlx audio.mp3 --model mlx-community/distil-whisper-large-v3 --output-format srt
+vayu audio.mp3 --model mlx-community/distil-whisper-large-v3 --output-format srt
 
 # Multiple files
-whisper-mlx audio1.mp3 audio2.mp3 --output-dir ./transcripts
+vayu audio1.mp3 audio2.mp3 --output-dir ./transcripts
 
 # With word timestamps
-whisper-mlx audio.mp3 --word-timestamps True
+vayu audio.mp3 --word-timestamps True
 
 # Translate to English
-whisper-mlx audio.mp3 --task translate
+vayu audio.mp3 --task translate
 ```
 
 ## Available Models
