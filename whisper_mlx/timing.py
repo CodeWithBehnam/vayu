@@ -13,7 +13,7 @@ from .audio import HOP_LENGTH, SAMPLE_RATE, TOKENS_PER_SECOND
 from .tokenizer import Tokenizer
 
 if TYPE_CHECKING:
-    from .model import Whisper
+    from .whisper import Whisper
 
 
 def median_filter(x: np.ndarray, filter_width: int):

@@ -1,5 +1,5 @@
 ---
-status: pending
+status: completed
 priority: p1
 issue_id: BUG-001
 tags: [bug, import-error, critical]
