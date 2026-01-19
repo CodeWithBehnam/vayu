@@ -1,2 +1,0 @@
-[console_scripts]
-whisper-mlx = whisper_mlx.cli:main
