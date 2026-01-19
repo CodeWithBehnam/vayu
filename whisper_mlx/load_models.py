@@ -15,6 +15,13 @@ def load_model(
     path_or_hf_repo: str,
     dtype: mx.Dtype = mx.float32,
 ) -> whisper.Whisper:
+    # Validate inputs
+    if not path_or_hf_repo or not isinstance(path_or_hf_repo, str):
+        raise ValueError("path_or_hf_repo must be a non-empty string")
+
+    if not isinstance(dtype, mx.Dtype):
+        raise TypeError(f"dtype must be an mx.Dtype, got {type(dtype).__name__}")
+
     model_path = Path(path_or_hf_repo)
     if not model_path.exists():
         model_path = Path(snapshot_download(repo_id=path_or_hf_repo))
