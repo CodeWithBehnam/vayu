@@ -5,13 +5,7 @@ todos/
 .venv/
 .claude/
 notebooks/
-tests/__pycache__/
 data/
-
-# Large files
-*.mp4
-*.mp3
-*.wav
 
 # Build artifacts
 *.egg-info/
@@ -20,9 +14,17 @@ __pycache__/
 dist/
 build/
 
-# Data outputs
-data/*.json
-data/*.srt
-data/*.tsv
-data/*.txt
-data/*.vtt
+# Large/media files
+*.mp4
+*.mp3
+*.wav
+*.png
+*.jpg
+*.jpeg
+
+# Notebooks and benchmarks
+*.ipynb
+benchmark_*.py
+
+# Text dumps
+*-mlx-*.txt
