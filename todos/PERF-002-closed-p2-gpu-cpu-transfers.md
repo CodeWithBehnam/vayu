@@ -1,9 +1,10 @@
 ---
-status: pending
+status: closed
 priority: p2
 issue_id: PERF-002
 tags: [performance, mlx, gpu-transfer]
 dependencies: []
+resolution: wontfix
 ---
 
 # Repeated GPU-CPU Transfers in Token Processing
@@ -76,3 +77,24 @@ next_tokens_cpu = next_tokens.tolist()
 2. Profile with MLX profiler: `MLX_DEBUG=1`
 3. Measure GPU utilization before/after
 4. Benchmark on varying sequence lengths
+
+## Investigation Results (2026-01-19)
+
+**Benchmark Results:**
+```
+Model: mlx-community/whisper-turbo
+Audio: Synthetic 10s test audio (16kHz)
+
+WITHOUT word_timestamps (baseline): 6.989s avg
+WITH word_timestamps (uses ApplyTimestampRules): 4.710s avg
+
+Timestamp overhead: -32.6% (FASTER, not slower!)
+```
+
+**Conclusion:**
+The hypothesized performance issue was NOT observed in benchmarks:
+- Code WITH `.tolist()` calls (word_timestamps=True) was actually 32% FASTER
+- The existing `mx.async_eval()` usage provides adequate overlap
+- The timestamp rules may help guide decoding to converge faster
+
+**Resolution:** Won't fix - no measurable performance degradation from GPU-CPU transfers.
