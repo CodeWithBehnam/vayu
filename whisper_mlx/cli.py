@@ -1,14 +1,33 @@
 # Copyright © 2023 Apple Inc.
 
 import argparse
+import logging
 import os
 import pathlib
-import traceback
+import sys
 import warnings
+from dataclasses import dataclass, field
+from subprocess import CalledProcessError
+from typing import List
 
 from . import audio
 from .transcribe import transcribe
 from .writers import get_writer
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TranscriptionError:
+    """Record of a failed transcription."""
+    file: str
+    error_type: str
+    message: str
 
 
 def str2bool(string):
@@ -207,6 +226,11 @@ def build_parser():
         default="0",
         help="Comma-separated list start,end,start,end,... timestamps (in seconds) of clips to process, where the last end timestamp defaults to the end of the file",
     )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit on first error instead of continuing to next file",
+    )
     return parser
 
 
@@ -221,6 +245,7 @@ def main():
     output_format: str = args.pop("output_format")
     output_name: str = args.pop("output_name")
     batch_size: int = args.pop("batch_size")
+    strict: bool = args.pop("strict")
     os.makedirs(output_dir, exist_ok=True)
 
     writer = get_writer(output_format, output_dir)
@@ -241,6 +266,8 @@ def main():
     if writer_args["max_words_per_line"] and writer_args["max_line_width"]:
         warnings.warn("--max-words-per-line has no effect with --max-line-width")
 
+    errors: List[TranscriptionError] = []
+
     for audio_obj in args.pop("audio"):
         if audio_obj == "-":
             # receive the contents from stdin rather than read a file
@@ -257,9 +284,44 @@ def main():
                 **args,
             )
             writer(result, output_name, **writer_args)
+        except FileNotFoundError as e:
+            logger.error(f"File not found: {audio_obj}")
+            errors.append(TranscriptionError(audio_obj, "FileNotFoundError", str(e)))
+            if strict:
+                sys.exit(1)
+        except CalledProcessError as e:
+            # FFmpeg or other subprocess failures
+            stderr_msg = e.stderr.decode() if e.stderr else str(e)
+            logger.error(f"Audio processing failed for {audio_obj}: {stderr_msg}")
+            errors.append(TranscriptionError(audio_obj, "CalledProcessError", stderr_msg))
+            if strict:
+                sys.exit(1)
+        except ValueError as e:
+            # Input validation errors
+            logger.error(f"Invalid input for {audio_obj}: {e}")
+            errors.append(TranscriptionError(audio_obj, "ValueError", str(e)))
+            if strict:
+                sys.exit(1)
+        except MemoryError as e:
+            # Out of memory - always fatal
+            logger.error(f"Out of memory processing {audio_obj}. Try reducing --batch-size.")
+            raise
+        except KeyboardInterrupt:
+            logger.info("Interrupted by user")
+            sys.exit(130)
         except Exception as e:
-            traceback.print_exc()
-            print(f"Skipping {audio_obj} due to {type(e).__name__}: {str(e)}")
+            # Catch-all for unexpected errors
+            logger.exception(f"Unexpected error processing {audio_obj}")
+            errors.append(TranscriptionError(audio_obj, type(e).__name__, str(e)))
+            if strict:
+                raise
+
+    # Report summary of errors if any
+    if errors:
+        print(f"\n{len(errors)} file(s) failed:")
+        for err in errors:
+            print(f"  - {err.file}: {err.error_type}: {err.message}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

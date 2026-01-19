@@ -1,9 +1,10 @@
 ---
-status: pending
+status: closed
 priority: p2
 issue_id: ERR-002
 tags: [error-handling, cli, logging]
 dependencies: []
+resolution: fixed
 ---
 
 # Bare Exceptions in CLI and Error Suppression
