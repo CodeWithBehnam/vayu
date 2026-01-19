@@ -2,7 +2,7 @@
 
 import zlib
 from dataclasses import dataclass, field, replace
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import mlx.core as mx
 import numpy as np
@@ -10,6 +10,9 @@ from mlx.utils import tree_map
 
 from .audio import CHUNK_LENGTH
 from .tokenizer import Tokenizer, get_tokenizer
+
+if TYPE_CHECKING:
+    from .whisper import Whisper
 
 
 def compression_ratio(text) -> float:

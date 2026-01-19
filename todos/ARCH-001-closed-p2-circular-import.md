@@ -1,9 +1,10 @@
 ---
-status: pending
+status: closed
 priority: p2
 issue_id: ARCH-001
 tags: [architecture, circular-import, refactoring]
 dependencies: []
+resolution: fixed
 ---
 
 # Circular Import Between whisper.py and decoding.py
