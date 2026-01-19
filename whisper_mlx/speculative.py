@@ -29,6 +29,8 @@ Usage:
 import time
 from typing import Optional, Union
 
+from .utils import MODEL_REPOS
+
 import mlx.core as mx
 import numpy as np
 
@@ -213,19 +215,9 @@ def speculative_transcribe(
     Returns:
         dict with "text", "segments", and "stats"
     """
-    # Model path mapping
-    model_map = {
-        "tiny": "mlx-community/whisper-tiny-mlx",
-        "base": "mlx-community/whisper-base-mlx",
-        "small": "mlx-community/whisper-small-mlx",
-        "medium": "mlx-community/whisper-medium-mlx",
-        "large-v3": "mlx-community/whisper-large-v3-mlx",
-        "turbo": "mlx-community/whisper-turbo",
-        "distil-large-v3": "mlx-community/distil-whisper-large-v3",
-    }
-
-    draft_path = model_map.get(draft_model, draft_model)
-    target_path = model_map.get(target_model, target_model)
+    # Resolve model paths using centralized mapping
+    draft_path = MODEL_REPOS.get(draft_model, draft_model)
+    target_path = MODEL_REPOS.get(target_model, target_model)
 
     if verbose:
         print(f"Speculative Decoding: {draft_model} → {target_model}")

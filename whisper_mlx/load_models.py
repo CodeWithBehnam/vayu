@@ -54,3 +54,18 @@ def load_model(
     model.update(weights)
     mx.eval(model.parameters())
     return model
+
+
+class ModelHolder:
+    """Singleton cache for loaded Whisper models."""
+
+    model = None
+    model_path = None
+
+    @classmethod
+    def get_model(cls, model_path: str, dtype: mx.Dtype):
+        """Get a cached model or load a new one."""
+        if cls.model is None or model_path != cls.model_path:
+            cls.model = load_model(model_path, dtype=dtype)
+            cls.model_path = model_path
+        return cls.model

@@ -1,9 +1,10 @@
 ---
-status: pending
+status: closed
 priority: p2
 issue_id: ARCH-003
 tags: [architecture, dry, code-duplication]
 dependencies: []
+resolution: fixed
 ---
 
 # Duplicate Code Across Modules

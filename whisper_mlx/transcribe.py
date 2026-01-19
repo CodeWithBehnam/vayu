@@ -18,26 +18,10 @@ from .audio import (
     pad_or_trim,
 )
 from .decoding import DecodingOptions, DecodingResult
-from .load_models import load_model
+from .load_models import ModelHolder
 from .timing import add_word_timestamps
 from .tokenizer import LANGUAGES, get_tokenizer
-
-
-def _format_timestamp(seconds: float):
-    assert seconds >= 0, "non-negative timestamp expected"
-    milliseconds = round(seconds * 1000.0)
-
-    hours = milliseconds // 3_600_000
-    milliseconds -= hours * 3_600_000
-
-    minutes = milliseconds // 60_000
-    milliseconds -= minutes * 60_000
-
-    seconds = milliseconds // 1_000
-    milliseconds -= seconds * 1_000
-
-    hours_marker = f"{hours:02d}:" if hours > 0 else ""
-    return f"{hours_marker}{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+from .utils import format_timestamp
 
 
 def _get_end(segments: List[dict]) -> Optional[float]:
@@ -45,18 +29,6 @@ def _get_end(segments: List[dict]) -> Optional[float]:
         (w["end"] for s in reversed(segments) for w in reversed(s["words"])),
         segments[-1]["end"] if segments else None,
     )
-
-
-class ModelHolder:
-    model = None
-    model_path = None
-
-    @classmethod
-    def get_model(cls, model_path: str, dtype: mx.Dtype):
-        if cls.model is None or model_path != cls.model_path:
-            cls.model = load_model(model_path, dtype=dtype)
-            cls.model_path = model_path
-        return cls.model
 
 
 def transcribe(
@@ -467,7 +439,7 @@ def transcribe(
                         if verbose:
                             for segment in current_segments:
                                 start, end, text = segment["start"], segment["end"], segment["text"]
-                                line = f"[{_format_timestamp(start)} --> {_format_timestamp(end)}] {text}"
+                                line = f"[{format_timestamp(start)} --> {format_timestamp(end)}] {text}"
                                 print(make_safe(line))
 
                         # Clear empty segments
@@ -708,7 +680,7 @@ def transcribe(
                                 segment["end"],
                                 segment["text"],
                             )
-                            line = f"[{_format_timestamp(start)} --> {_format_timestamp(end)}] {text}"
+                            line = f"[{format_timestamp(start)} --> {format_timestamp(end)}] {text}"
                             print(make_safe(line))
 
                     # if a segment is instantaneous or does not contain text, clear it

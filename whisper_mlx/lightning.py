@@ -1,12 +1,8 @@
 # Copyright © 2024 Mustafa Aljadery & Siddharth Sharma
 # Simple API wrapper for quick transcription
 
-import os
-from pathlib import Path
-
-from huggingface_hub import snapshot_download
-
 from .transcribe import transcribe as transcribe_audio
+from .utils import MODEL_REPOS, QUANT_REPOS, resolve_model_path
 
 
 class LightningWhisperMLX:
@@ -18,49 +14,6 @@ class LightningWhisperMLX:
         result = whisper.transcribe("audio.mp3")
         print(result["text"])
     """
-
-    # Map of model names to HuggingFace repos
-    MODEL_REPOS = {
-        "tiny": "mlx-community/whisper-tiny-mlx",
-        "tiny.en": "mlx-community/whisper-tiny.en-mlx",
-        "base": "mlx-community/whisper-base-mlx",
-        "base.en": "mlx-community/whisper-base.en-mlx",
-        "small": "mlx-community/whisper-small-mlx",
-        "small.en": "mlx-community/whisper-small.en-mlx",
-        "medium": "mlx-community/whisper-medium-mlx",
-        "medium.en": "mlx-community/whisper-medium.en-mlx",
-        "large": "mlx-community/whisper-large-v3-mlx",
-        "large-v2": "mlx-community/whisper-large-v2-mlx",
-        "large-v3": "mlx-community/whisper-large-v3-mlx",
-        "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
-        "turbo": "mlx-community/whisper-turbo",
-        "distil-large-v2": "mlx-community/distil-whisper-large-v2",
-        "distil-large-v3": "mlx-community/distil-whisper-large-v3",
-    }
-
-    # Quantized model repos
-    QUANT_REPOS = {
-        "tiny": {
-            "4bit": "mlx-community/whisper-tiny-mlx-4bit",
-            "8bit": "mlx-community/whisper-tiny-mlx-8bit",
-        },
-        "small": {
-            "4bit": "mlx-community/whisper-small-mlx-4bit",
-            "8bit": "mlx-community/whisper-small-mlx-8bit",
-        },
-        "medium": {
-            "4bit": "mlx-community/whisper-medium-mlx-4bit",
-            "8bit": "mlx-community/whisper-medium-mlx-8bit",
-        },
-        "large-v3": {
-            "4bit": "mlx-community/whisper-large-v3-mlx-4bit",
-            "8bit": "mlx-community/whisper-large-v3-mlx-8bit",
-        },
-        "distil-large-v3": {
-            "4bit": "mlx-community/distil-whisper-large-v3-4bit",
-            "8bit": "mlx-community/distil-whisper-large-v3-8bit",
-        },
-    }
 
     def __init__(
         self,
@@ -93,19 +46,7 @@ class LightningWhisperMLX:
         self.batch_size = batch_size
         self.quant = quant
         self.name = model
-
-        # Resolve model path
-        if quant and model in self.QUANT_REPOS and quant in self.QUANT_REPOS[model]:
-            self.model_path = self.QUANT_REPOS[model][quant]
-        elif model in self.MODEL_REPOS:
-            self.model_path = self.MODEL_REPOS[model]
-        elif "/" in model:
-            # Assume it's a HuggingFace repo path
-            self.model_path = model
-        else:
-            raise ValueError(
-                f"Unknown model: {model}. Available models: {list(self.MODEL_REPOS.keys())}"
-            )
+        self.model_path = resolve_model_path(model, quant)
 
     def transcribe(
         self,
