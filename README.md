@@ -11,6 +11,7 @@
 [![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey.svg)](https://www.apple.com/macos/)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-M1%2FM2%2FM3%2FM4-orange.svg)](https://support.apple.com/en-us/HT211814)
 [![MLX](https://img.shields.io/badge/MLX-0.11+-purple.svg)](https://github.com/ml-explore/mlx)
+[![Stars](https://img.shields.io/github/stars/CodeWithBehnam/vayu?style=social)](https://github.com/CodeWithBehnam/vayu/stargazers)
 
 **Vayu** (وایو) is the fastest Whisper speech-to-text implementation optimized for Apple Silicon Macs.
 It combines [MLX Whisper](https://github.com/ml-explore/mlx-examples) with [Lightning Whisper MLX](https://github.com/mustafaaljadery/lightning-whisper-mlx) batched decoding to deliver **3-5x faster transcription** than standard Whisper on M1/M2/M3/M4 chips.
@@ -205,6 +206,16 @@ This project builds on the excellent work of:
 | [mlx-examples/whisper](https://github.com/ml-explore/mlx-examples) | Apple Inc. | MLX framework, Whisper port, CLI, output writers |
 | [lightning-whisper-mlx](https://github.com/mustafaaljadery/lightning-whisper-mlx) | Mustafa Aljadery, Siddharth Sharma | Batched decoding for 3-5x speedup |
 | [Whisper](https://github.com/openai/whisper) | OpenAI | Original model architecture and weights |
+
+## Star History
+
+<a href="https://star-history.com/#CodeWithBehnam/vayu&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=CodeWithBehnam/vayu&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=CodeWithBehnam/vayu&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=CodeWithBehnam/vayu&type=Date" width="100%" />
+ </picture>
+</a>
 
 ## Author
 
