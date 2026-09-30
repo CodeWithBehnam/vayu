@@ -21,6 +21,10 @@ FRAMES_PER_SECOND = SAMPLE_RATE // HOP_LENGTH  # 10ms per audio frame
 TOKENS_PER_SECOND = SAMPLE_RATE // N_SAMPLES_PER_TOKEN  # 20ms per audio token
 
 
+class AudioLoadError(RuntimeError):
+    """ffmpeg is missing or could not decode the audio."""
+
+
 def load_audio(file: Optional[str] = None, sr: int = SAMPLE_RATE, from_stdin: bool = False) -> mx.array:
     """
     Open an audio file and read as mono waveform, resampling as necessary
@@ -35,7 +39,14 @@ def load_audio(file: Optional[str] = None, sr: int = SAMPLE_RATE, from_stdin: bo
 
     Returns
     -------
-    A NumPy array containing the audio waveform, in float32 dtype.
+    An mx.array containing the audio waveform, in float32 dtype.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the audio file does not exist.
+    AudioLoadError
+        If ffmpeg is not installed or fails to decode the audio.
     """
 
     # This launches a subprocess to decode audio while down-mixing
@@ -44,7 +55,7 @@ def load_audio(file: Optional[str] = None, sr: int = SAMPLE_RATE, from_stdin: bo
         cmd = ["ffmpeg", "-i", "pipe:0"]
     else:
         if not os.path.isfile(file):
-            raise ValueError(f"Audio file not found: {file}")
+            raise FileNotFoundError(f"Audio file not found: {file}")
         file = os.path.realpath(file)
         cmd = ["ffmpeg", "-nostdin", "-i", file]
 
@@ -60,8 +71,12 @@ def load_audio(file: Optional[str] = None, sr: int = SAMPLE_RATE, from_stdin: bo
     # fmt: on
     try:
         out = run(cmd, capture_output=True, check=True).stdout
+    except FileNotFoundError as e:
+        raise AudioLoadError(
+            "ffmpeg was not found on PATH; install it (e.g. `brew install ffmpeg`)"
+        ) from e
     except CalledProcessError as e:
-        raise RuntimeError(f"Failed to load audio: {e.stderr.decode()}") from e
+        raise AudioLoadError(f"Failed to load audio: {e.stderr.decode()}") from e
 
     return mx.array(np.frombuffer(out, np.int16)).flatten().astype(mx.float32) / 32768.0
 
