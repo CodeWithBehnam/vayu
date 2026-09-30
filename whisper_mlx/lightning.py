@@ -56,7 +56,8 @@ class LightningWhisperMLX:
             Recommended: 12 for distil models, 6 for large models.
 
         quant : str, optional
-            Quantization level: "4bit" or "8bit". Only supported for some models.
+            Quantization level: "4bit" or "8bit". Available for tiny, small,
+            medium, large-v3 and distil-large-v3; raises ValueError otherwise.
         """
         if batch_size < 1:
             raise ValueError(f"batch_size must be >= 1, got {batch_size}")

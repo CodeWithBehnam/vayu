@@ -60,6 +60,7 @@ MODEL_REPOS = {
 }
 
 # Quantized model repos
+QUANT_LEVELS = ("4bit", "8bit")
 QUANT_REPOS = {
     "tiny": {
         "4bit": "mlx-community/whisper-tiny-mlx-4bit",
@@ -95,7 +96,8 @@ def resolve_model_path(
     model : str
         Model name (e.g., "tiny", "turbo") or HuggingFace repo path
     quant : str, optional
-        Quantization level: "4bit" or "8bit"
+        Quantization level: "4bit" or "8bit". Only models listed in
+        QUANT_REPOS have quantized builds.
 
     Returns
     -------
@@ -105,11 +107,25 @@ def resolve_model_path(
     Raises
     ------
     ValueError
-        If model name is unknown
+        If the model name is unknown, or quant is invalid or not available
+        for the model
     """
-    # Check quantized repos first
-    if quant and model in QUANT_REPOS and quant in QUANT_REPOS[model]:
-        return QUANT_REPOS[model][quant]
+    if quant:
+        if quant not in QUANT_LEVELS:
+            raise ValueError(
+                f"Unknown quant {quant!r}; expected one of {list(QUANT_LEVELS)}"
+            )
+        if model in QUANT_REPOS and quant in QUANT_REPOS[model]:
+            return QUANT_REPOS[model][quant]
+        if "/" in model:
+            raise ValueError(
+                "quant only applies to model names; pass the quantized repo "
+                f"path as model instead of {model!r}"
+            )
+        raise ValueError(
+            f"No {quant} build of {model!r}. Models with quantized builds: "
+            f"{list(QUANT_REPOS)}"
+        )
 
     # Check standard repos
     if model in MODEL_REPOS:
