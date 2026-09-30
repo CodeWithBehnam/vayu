@@ -111,7 +111,9 @@ def transcribe(
         to make it more likely to predict those word correctly.
 
     decode_options: dict
-        Keyword arguments to construct `DecodingOptions` instances
+        Keyword arguments to construct `DecodingOptions` instances. Beam search
+        (`beam_size`, `patience`) is not implemented and raises NotImplementedError;
+        `best_of` only applies when batch_size is 1.
 
     clip_timestamps: Union[str, List[float]]
         Comma-separated list start,end,start,end,... timestamps (in seconds) of clips to process.
@@ -134,6 +136,11 @@ def transcribe(
             f"batch_size={batch_size} may cause out-of-memory errors. "
             "Consider using batch_size <= 64."
         )
+    for option in ("beam_size", "patience"):
+        if decode_options.get(option) is not None:
+            raise NotImplementedError(
+                f"{option} is not supported: beam search is not implemented yet"
+            )
     if batch_size > 1 and hallucination_silence_threshold is not None:
         # skipping silence needs the window-by-window seeking of batch_size=1
         warnings.warn(

@@ -119,12 +119,6 @@ def build_parser():
         help="Number of candidates when sampling with non-zero temperature",
     )
     parser.add_argument(
-        "--patience",
-        type=float,
-        default=None,
-        help="Optional patience value to use in beam decoding, as in https://arxiv.org/abs/2204.05424, the default (1.0) is equivalent to conventional beam search",
-    )
-    parser.add_argument(
         "--length-penalty",
         type=float,
         default=None,
