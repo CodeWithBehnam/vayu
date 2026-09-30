@@ -126,6 +126,8 @@ For reduced memory usage, use quantized models:
 whisper = LightningWhisperMLX(model="distil-large-v3", quant="4bit")
 ```
 
+`quant` accepts `"4bit"` or `"8bit"` and is available for `tiny`, `small`, `medium`, `large-v3` and `distil-large-v3`. Other models raise a `ValueError` rather than silently loading full precision.
+
 ## Batch Size Recommendations
 
 | Model | Recommended batch_size | Memory Usage |
