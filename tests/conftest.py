@@ -49,12 +49,15 @@ class StubModel:
     """Stands in for Whisper in transcribe(): decode() returns canned tokens.
 
     `respond(options, window)` returns the token list for one window, where
-    `window` is the index of the call's segment within the whole run.
+    `window` numbers the distinct mel segments in the order they are first seen,
+    so a re-decode of the same segment gets the same number. Use `noise=True`
+    in run_transcribe to make every window distinct.
     """
 
     dims = SimpleNamespace(n_mels=80, n_audio_ctx=1500)
     is_multilingual = False
     num_languages = 99  # what an English-only checkpoint reports (n_vocab 51864)
+    no_speech_prob = 0.0
 
     def __init__(
         self,
@@ -65,39 +68,45 @@ class StubModel:
         self.compression_ratio = compression_ratio
         self.calls: List[DecodingOptions] = []
         self.batch_sizes: List[int] = []
-        self._window = 0
+        self._windows = {}
 
     def decode(self, mel, options: DecodingOptions):
         single = mel.ndim == 2
-        n = 1 if single else mel.shape[0]
+        items = [mel] if single else [mel[i] for i in range(mel.shape[0])]
         self.calls.append(options)
-        self.batch_sizes.append(n)
+        self.batch_sizes.append(len(items))
         results = []
-        for _ in range(n):
+        for item in items:
+            key = np.array(item).tobytes()
+            window = self._windows.setdefault(key, len(self._windows))
             results.append(
                 DecodingResult(
                     audio_features=None,
                     language="en",
-                    tokens=self.respond(options, self._window),
+                    tokens=self.respond(options, window),
                     avg_logprob=-0.1,
-                    no_speech_prob=0.0,
+                    no_speech_prob=self.no_speech_prob,
                     temperature=options.temperature,
-                    compression_ratio=self.compression_ratio(options, self._window),
+                    compression_ratio=self.compression_ratio(options, window),
                 )
             )
-            self._window += 1
         return results[0] if single else results
 
 
 @pytest.fixture
 def run_transcribe(monkeypatch):
-    """Run transcribe() on `seconds` of silence against a StubModel."""
+    """Run transcribe() on `seconds` of silence (or noise) against a stub model."""
 
-    def run(model: StubModel, seconds: float, **kwargs):
+    def run(model: StubModel, seconds: float, noise: bool = False, **kwargs):
         monkeypatch.setattr(
             transcribe_module.ModelHolder, "get_model", lambda *a, **k: model
         )
-        audio = np.zeros(int(SAMPLE_RATE * seconds), dtype=np.float32)
+        n_samples = int(SAMPLE_RATE * seconds)
+        if noise:
+            rng = np.random.default_rng(0)
+            audio = (0.1 * rng.standard_normal(n_samples)).astype(np.float32)
+        else:
+            audio = np.zeros(n_samples, dtype=np.float32)
         kwargs.setdefault("language", "en")
         return transcribe_module.transcribe(audio, **kwargs)
 
