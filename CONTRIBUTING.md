@@ -7,14 +7,16 @@ Thanks for your interest in contributing!
 ```bash
 git clone https://github.com/CodeWithBehnam/vayu.git
 cd vayu
-pip install -e ".[dev]"
+pip install -e ".[dev]"      # or: uv sync --extra dev
 ```
+
+The test suite also runs on Linux with MLX's CPU build: `pip install "mlx[cpu]"`.
 
 ## Making changes
 
-1. Fork the repo and create a branch from `master`
+1. Fork the repo and create a branch from `main`
 2. Make your changes
-3. Run tests: `pytest`
+3. Run tests: `pytest` (CI runs them on every pull request)
 4. Submit a pull request
 
 ## Reporting bugs
