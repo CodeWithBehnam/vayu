@@ -1,19 +1,43 @@
-"""Shared fixtures: a stub model for driving transcribe() without weights."""
+"""Shared fixtures: stub and random-weight models for tests without downloads."""
 
 import importlib
 from types import SimpleNamespace
 from typing import Callable, List
 
+import mlx.core as mx
 import numpy as np
 import pytest
 
 from whisper_mlx.decoding import DecodingOptions, DecodingResult
 from whisper_mlx.tokenizer import get_tokenizer
+from whisper_mlx.whisper import ModelDimensions, Whisper
 
 # transcribe() is re-exported by the package, so fetch the module itself
 transcribe_module = importlib.import_module("whisper_mlx.transcribe")
 
 SAMPLE_RATE = 16000
+
+# English-only vocabulary with a deliberately small network: fast on CPU
+TINY_EN_DIMS = ModelDimensions(
+    n_mels=80,
+    n_audio_ctx=1500,
+    n_audio_state=64,
+    n_audio_head=2,
+    n_audio_layer=2,
+    n_vocab=51864,
+    n_text_ctx=448,
+    n_text_state=64,
+    n_text_head=2,
+    n_text_layer=2,
+)
+
+
+def random_whisper(seed: int = 0, dims: ModelDimensions = TINY_EN_DIMS) -> Whisper:
+    """A Whisper model with random weights, deterministic for a given seed."""
+    mx.random.seed(seed)
+    model = Whisper(dims, mx.float16)
+    mx.eval(model.parameters())
+    return model
 
 
 @pytest.fixture
