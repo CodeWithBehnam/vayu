@@ -1,5 +1,6 @@
 # Copyright © 2023 Apple Inc.
 
+import os
 import sys
 import warnings
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -143,6 +144,9 @@ def transcribe(
     if isinstance(audio, str):
         if not audio:
             raise ValueError("Audio path cannot be empty")
+        if not os.path.isfile(audio):
+            # fail before loading (and possibly downloading) the model
+            raise FileNotFoundError(f"Audio file not found: {audio}")
     elif isinstance(audio, (np.ndarray, mx.array)):
         if audio.size == 0:
             raise ValueError("Audio array cannot be empty")

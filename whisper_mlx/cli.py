@@ -6,8 +6,7 @@ import os
 import pathlib
 import sys
 import warnings
-from dataclasses import dataclass, field
-from subprocess import CalledProcessError
+from dataclasses import dataclass
 from typing import List
 
 from . import audio
@@ -268,51 +267,62 @@ def main():
 
     errors: List[TranscriptionError] = []
 
-    for audio_obj in args.pop("audio"):
-        if audio_obj == "-":
-            # receive the contents from stdin rather than read a file
-            audio_obj = audio.load_audio(from_stdin=True)
+    audio_paths: List[str] = args.pop("audio")
+    if output_name is not None and len(audio_paths) > 1:
+        parser.error("--output-name can only be used with a single audio input")
+    # "-" reads from stdin; its output is named "content"
+    output_names = [
+        output_name or ("content" if path == "-" else pathlib.Path(path).stem)
+        for path in audio_paths
+    ]
+    duplicates = sorted({n for n in output_names if output_names.count(n) > 1})
+    if duplicates:
+        parser.error(
+            f"several inputs would write to the same output name: {', '.join(duplicates)}"
+        )
 
-            output_name = output_name or "content"
-        else:
-            output_name = output_name or pathlib.Path(audio_obj).stem
+    for audio_path, name in zip(audio_paths, output_names):
         try:
+            audio_obj = (
+                audio.load_audio(from_stdin=True) if audio_path == "-" else audio_path
+            )
             result = transcribe(
                 audio_obj,
                 path_or_hf_repo=path_or_hf_repo,
                 batch_size=batch_size,
                 **args,
             )
-            writer(result, output_name, **writer_args)
+            writer(result, name, **writer_args)
         except FileNotFoundError as e:
-            logger.error(f"File not found: {audio_obj}")
-            errors.append(TranscriptionError(audio_obj, "FileNotFoundError", str(e)))
+            logger.error(f"File not found: {audio_path}")
+            errors.append(TranscriptionError(audio_path, "FileNotFoundError", str(e)))
             if strict:
                 sys.exit(1)
-        except CalledProcessError as e:
-            # FFmpeg or other subprocess failures
-            stderr_msg = e.stderr.decode() if e.stderr else str(e)
-            logger.error(f"Audio processing failed for {audio_obj}: {stderr_msg}")
-            errors.append(TranscriptionError(audio_obj, "CalledProcessError", stderr_msg))
+        except audio.AudioLoadError as e:
+            # ffmpeg missing or unable to decode the input
+            logger.error(f"Audio processing failed for {audio_path}: {e}")
+            errors.append(TranscriptionError(audio_path, "AudioLoadError", str(e)))
             if strict:
                 sys.exit(1)
         except ValueError as e:
             # Input validation errors
-            logger.error(f"Invalid input for {audio_obj}: {e}")
-            errors.append(TranscriptionError(audio_obj, "ValueError", str(e)))
+            logger.error(f"Invalid input for {audio_path}: {e}")
+            errors.append(TranscriptionError(audio_path, "ValueError", str(e)))
             if strict:
                 sys.exit(1)
-        except MemoryError as e:
+        except MemoryError:
             # Out of memory - always fatal
-            logger.error(f"Out of memory processing {audio_obj}. Try reducing --batch-size.")
+            logger.error(
+                f"Out of memory processing {audio_path}. Try reducing --batch-size."
+            )
             raise
         except KeyboardInterrupt:
             logger.info("Interrupted by user")
             sys.exit(130)
         except Exception as e:
             # Catch-all for unexpected errors
-            logger.exception(f"Unexpected error processing {audio_obj}")
-            errors.append(TranscriptionError(audio_obj, type(e).__name__, str(e)))
+            logger.exception(f"Unexpected error processing {audio_path}")
+            errors.append(TranscriptionError(audio_path, type(e).__name__, str(e)))
             if strict:
                 raise
 

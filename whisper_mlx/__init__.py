@@ -47,6 +47,7 @@ from .audio import (
     N_SAMPLES,
     SAMPLE_RATE,
     TOKENS_PER_SECOND,
+    AudioLoadError,
     load_audio,
     log_mel_spectrogram,
     pad_or_trim,
@@ -91,6 +92,7 @@ __all__ = [
     "DecodingResult",
     # Audio processing
     "load_audio",
+    "AudioLoadError",
     "log_mel_spectrogram",
     "pad_or_trim",
     "SAMPLE_RATE",
