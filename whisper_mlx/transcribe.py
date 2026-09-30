@@ -118,7 +118,7 @@ def transcribe(
 
     hallucination_silence_threshold: Optional[float]
         When word_timestamps is True, skip silent periods longer than this threshold (in seconds)
-        when a possible hallucination is detected
+        when a possible hallucination is detected. Only applied when batch_size is 1.
 
     Returns
     -------
@@ -132,6 +132,12 @@ def transcribe(
         warnings.warn(
             f"batch_size={batch_size} may cause out-of-memory errors. "
             "Consider using batch_size <= 64."
+        )
+    if batch_size > 1 and hallucination_silence_threshold is not None:
+        # skipping silence needs the window-by-window seeking of batch_size=1
+        warnings.warn(
+            "hallucination_silence_threshold is only applied when batch_size=1; "
+            "ignoring it."
         )
 
     if isinstance(audio, str):
@@ -466,6 +472,21 @@ def transcribe(
                                     result=result,
                                 )
                             )
+
+                        if word_timestamps:
+                            add_word_timestamps(
+                                segments=current_segments,
+                                model=model,
+                                tokenizer=tokenizer,
+                                mel=mel_segments[batch_idx],
+                                num_frames=segment_size,
+                                prepend_punctuations=prepend_punctuations,
+                                append_punctuations=append_punctuations,
+                                last_speech_timestamp=last_speech_timestamp,
+                            )
+                            last_word_end = _get_end(current_segments)
+                            if last_word_end is not None:
+                                last_speech_timestamp = last_word_end
 
                         if verbose:
                             for segment in current_segments:
