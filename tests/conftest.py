@@ -7,6 +7,7 @@ from typing import Callable, List
 import mlx.core as mx
 import numpy as np
 import pytest
+from mlx.utils import tree_map
 
 from whisper_mlx.decoding import DecodingOptions, DecodingResult
 from whisper_mlx.tokenizer import get_tokenizer
@@ -32,12 +33,24 @@ TINY_EN_DIMS = ModelDimensions(
 )
 
 
-def random_whisper(seed: int = 0, dims: ModelDimensions = TINY_EN_DIMS) -> Whisper:
-    """A Whisper model with random weights, deterministic for a given seed."""
-    mx.random.seed(seed)
-    model = Whisper(dims, mx.float16)
+def to_float16(model: Whisper) -> Whisper:
+    """Cast weights to float16, as the published MLX checkpoints are."""
+    model.update(
+        tree_map(
+            lambda p: (
+                p.astype(mx.float16) if mx.issubdtype(p.dtype, mx.floating) else p
+            ),
+            model.parameters(),
+        )
+    )
     mx.eval(model.parameters())
     return model
+
+
+def random_whisper(seed: int = 0, dims: ModelDimensions = TINY_EN_DIMS) -> Whisper:
+    """A float16 Whisper model with random weights, deterministic for a given seed."""
+    mx.random.seed(seed)
+    return to_float16(Whisper(dims, mx.float16))
 
 
 @pytest.fixture
