@@ -79,7 +79,10 @@ class MultiHeadAttention(nn.Module):
 
         qk = q @ k
         if mask is not None:
-            qk = qk + mask[:n_ctx, :n_ctx]
+            # queries are the last n_ctx of the n_keys positions (earlier ones may
+            # come from the kv cache), so take the matching rows of the causal mask
+            n_keys = k.shape[-1]
+            qk = qk + mask[n_keys - n_ctx : n_keys, :n_keys]
 
         w = mx.softmax(qk, axis=-1, precise=True)
         out = (w @ v).transpose(0, 2, 1, 3)
