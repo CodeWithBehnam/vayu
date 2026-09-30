@@ -369,16 +369,15 @@ class ApplyTimestampRules(LogitFilter):
                 else:  # cannot be normal text tokens
                     mask[k, : self.tokenizer.eot] = -np.inf
 
-            timestamps = [
-                i for i, v in enumerate(seq) if v > self.tokenizer.timestamp_begin
-            ]
+            timestamps = [t for t in seq if t >= self.tokenizer.timestamp_begin]
             if len(timestamps) > 0:
                 # timestamps shouldn't decrease; forbid timestamp tokens smaller than the last
                 # also force each segment to have a nonzero length, to prevent infinite looping
-                last_timestamp = timestamps[-1]
-                if not last_timestamp or penultimate_was_timestamp:
-                    last_timestamp += 1
-                mask[k, self.tokenizer.timestamp_begin : last_timestamp] = -np.inf
+                if last_was_timestamp and not penultimate_was_timestamp:
+                    timestamp_last = timestamps[-1]  # may repeat to close the pair
+                else:
+                    timestamp_last = timestamps[-1] + 1
+                mask[k, self.tokenizer.timestamp_begin : timestamp_last] = -np.inf
 
         if len(tokens[0]) == self.sample_begin:
             # suppress generating non-timestamp tokens at the beginning

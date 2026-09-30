@@ -5,7 +5,7 @@ import warnings
 import mlx.core as mx
 import pytest
 
-from tests.conftest import TINY_EN_DIMS, StubModel
+from tests.conftest import TINY_EN_DIMS, StubModel, to_float16
 from whisper_mlx.whisper import Whisper
 
 
@@ -14,7 +14,7 @@ class CannedWhisper(Whisper):
 
     def __init__(self, stub: StubModel):
         super().__init__(TINY_EN_DIMS, mx.float16)
-        mx.eval(self.parameters())
+        to_float16(self)
         self.stub = stub
 
     def decode(self, mel, options):
@@ -61,24 +61,21 @@ def test_batched_words_use_each_windows_offset(model, run_transcribe):
         assert seek / 100 <= start < seek / 100 + 30
 
 
-def test_batched_warns_that_hallucination_threshold_is_ignored(model, run_transcribe):
+@pytest.fixture
+def stub(tokenizer, ts):
+    return StubModel(lambda o, w: [ts(0), *tokenizer.encode(" hello"), ts(2)])
+
+
+def test_batched_warns_that_hallucination_threshold_is_ignored(stub, run_transcribe):
     with pytest.warns(UserWarning, match="hallucination_silence_threshold"):
         run_transcribe(
-            model,
-            seconds=30,
-            batch_size=2,
-            word_timestamps=True,
-            hallucination_silence_threshold=2.0,
+            stub, seconds=30, batch_size=2, hallucination_silence_threshold=2.0
         )
 
 
-def test_sequential_does_not_warn_about_hallucination_threshold(model, run_transcribe):
+def test_sequential_does_not_warn_about_hallucination_threshold(stub, run_transcribe):
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         run_transcribe(
-            model,
-            seconds=30,
-            batch_size=1,
-            word_timestamps=True,
-            hallucination_silence_threshold=2.0,
+            stub, seconds=30, batch_size=1, hallucination_silence_threshold=2.0
         )
