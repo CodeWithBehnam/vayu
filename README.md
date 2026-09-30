@@ -140,6 +140,44 @@ whisper = LightningWhisperMLX(model="distil-large-v3", quant="4bit")
 
 Higher batch sizes improve throughput but require more memory. Start with the recommended values and adjust based on your hardware.
 
+### Measuring the speed-up
+
+The speed-up from batching depends on the model, batch size, chip and audio. To measure it on your Mac, time sequential against batched decoding on one of your own files:
+
+```bash
+python scripts/benchmark.py audio.mp3 --model distil-large-v3 --batch-size 12
+```
+
+The script loads the model and warms it up first, then reports the best of `--runs` timings for `batch_size=1` and for the batch size you chose.
+
+## Batched vs Sequential Decoding
+
+With `batch_size=1`, Vayu decodes like OpenAI's Whisper. Each 30-second window starts where the previous segment ended and is conditioned on the text so far.
+
+With `batch_size > 1`, fixed 30-second windows are decoded together. This is much faster, with some trade-offs:
+
+- Every window in a batch is conditioned on the text from *before* the batch, so `condition_on_previous_text` applies between batches, not between windows.
+- Windows don't move to follow the speech. Text cut off at a window boundary is kept as a segment that ends at the boundary, so a word spanning two windows can be split.
+- `hallucination_silence_threshold` needs window-by-window seeking and is ignored (with a warning).
+- `best_of` is not used. Temperature fallback re-decodes only the windows that fail the quality checks.
+
+Word-level timestamps work in both modes.
+
+## Loading Local Models
+
+`load_model` and `--model` accept a local directory with MLX weights (`config.json` plus `weights.safetensors`, `model.safetensors` or `weights.npz`). For safety, local directories are only loaded from:
+
+- the HuggingFace cache (`~/.cache/huggingface/hub`)
+- `/usr/local/share/whisper-mlx`
+- directories listed in `WHISPER_MLX_MODEL_DIRS` (separated by `:`)
+
+```bash
+export WHISPER_MLX_MODEL_DIRS=~/models:/Volumes/External/whisper
+vayu audio.mp3 --model ~/models/whisper-large-v3-mlx
+```
+
+Anything else fails with `Model path '...' is not within allowed directories`. HuggingFace repo names (`mlx-community/whisper-turbo`) are downloaded to the cache and are not affected.
+
 ## API Reference
 
 ### transcribe()
