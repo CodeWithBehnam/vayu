@@ -47,10 +47,16 @@ def to_float16(model: Whisper) -> Whisper:
     return model
 
 
-def random_whisper(seed: int = 0, dims: ModelDimensions = TINY_EN_DIMS) -> Whisper:
-    """A float16 Whisper model with random weights, deterministic for a given seed."""
+def random_whisper(
+    seed: int = 0, dims: ModelDimensions = TINY_EN_DIMS, dtype: mx.Dtype = mx.float16
+) -> Whisper:
+    """A Whisper model with random weights, deterministic for a given seed."""
     mx.random.seed(seed)
-    return to_float16(Whisper(dims, mx.float16))
+    model = Whisper(dims, dtype)
+    if dtype == mx.float16:
+        return to_float16(model)
+    mx.eval(model.parameters())
+    return model
 
 
 @pytest.fixture
