@@ -319,7 +319,12 @@ def transcribe(
         initial_prompt_tokens = []
 
     def new_segment(
-        *, start: float, end: float, tokens: mx.array, result: DecodingResult
+        *,
+        seek: int,
+        start: float,
+        end: float,
+        tokens: mx.array,
+        result: DecodingResult,
     ):
         tokens = tokens.tolist()
         text_tokens = [token for token in tokens if token < tokenizer.eot]
@@ -419,6 +424,7 @@ def transcribe(
                                 )
                                 current_segments.append(
                                     new_segment(
+                                        seek=segment_seek,
                                         start=time_offset + start_timestamp_pos * time_precision,
                                         end=time_offset + end_timestamp_pos * time_precision,
                                         tokens=mx.array(sliced_tokens),
@@ -426,6 +432,24 @@ def transcribe(
                                     )
                                 )
                                 last_slice = current_slice
+
+                            # The one-window path re-decodes an unfinished last segment
+                            # from its start timestamp. A batch has already moved on, so
+                            # keep the text and end it at the window boundary instead.
+                            remainder = tokens[last_slice:]
+                            if np.any(remainder < tokenizer.eot):
+                                start = time_offset + (
+                                    remainder[0].item() - tokenizer.timestamp_begin
+                                ) * time_precision
+                                current_segments.append(
+                                    new_segment(
+                                        seek=segment_seek,
+                                        start=start,
+                                        end=max(start, time_offset + segment_duration),
+                                        tokens=mx.array(remainder),
+                                        result=result,
+                                    )
+                                )
                         else:
                             duration = segment_duration
                             timestamps = tokens[timestamp_tokens.nonzero()[0]]
@@ -435,6 +459,7 @@ def transcribe(
 
                             current_segments.append(
                                 new_segment(
+                                    seek=segment_seek,
                                     start=time_offset,
                                     end=time_offset + duration,
                                     tokens=mx.array(tokens),
@@ -556,6 +581,7 @@ def transcribe(
                             )
                             current_segments.append(
                                 new_segment(
+                                    seek=seek,
                                     start=time_offset
                                     + start_timestamp_pos * time_precision,
                                     end=time_offset + end_timestamp_pos * time_precision,
@@ -589,6 +615,7 @@ def transcribe(
 
                         current_segments.append(
                             new_segment(
+                                seek=seek,
                                 start=time_offset,
                                 end=time_offset + duration,
                                 tokens=mx.array(tokens),
