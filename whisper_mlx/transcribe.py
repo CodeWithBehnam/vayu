@@ -212,11 +212,31 @@ def transcribe(
     if word_timestamps and task == "translate":
         warnings.warn("Word-level timestamps on translations may not be reliable.")
 
+    temperatures = (
+        [temperature] if isinstance(temperature, (int, float)) else temperature
+    )
+
+    def needs_fallback(decode_result: DecodingResult) -> bool:
+        """Whether a result fails the quality checks and should be re-decoded."""
+        if (
+            no_speech_threshold is not None
+            and decode_result.no_speech_prob > no_speech_threshold
+        ):
+            return False  # silence
+        if (
+            compression_ratio_threshold is not None
+            and decode_result.compression_ratio > compression_ratio_threshold
+        ):
+            return True  # too repetitive
+        if (
+            logprob_threshold is not None
+            and decode_result.avg_logprob < logprob_threshold
+        ):
+            return True  # average log probability is too low
+        return False
+
     def decode_with_fallback(segment: mx.array) -> DecodingResult:
         """Decode a single segment with temperature fallback."""
-        temperatures = (
-            [temperature] if isinstance(temperature, (int, float)) else temperature
-        )
         decode_result = None
 
         for t in temperatures:
@@ -231,24 +251,7 @@ def transcribe(
 
             options = DecodingOptions(**kwargs, temperature=t)
             decode_result = model.decode(segment, options)
-
-            needs_fallback = False
-            if (
-                compression_ratio_threshold is not None
-                and decode_result.compression_ratio > compression_ratio_threshold
-            ):
-                needs_fallback = True  # too repetitive
-            if (
-                logprob_threshold is not None
-                and decode_result.avg_logprob < logprob_threshold
-            ):
-                needs_fallback = True  # average log probability is too low
-            if (
-                no_speech_threshold is not None
-                and decode_result.no_speech_prob > no_speech_threshold
-            ):
-                needs_fallback = False  # silence
-            if not needs_fallback:
+            if not needs_fallback(decode_result):
                 break
 
         return decode_result
@@ -256,55 +259,32 @@ def transcribe(
     def decode_batch_with_fallback(segment_batch: mx.array) -> List[DecodingResult]:
         """Decode a batch of segments with per-segment temperature fallback.
 
-        Optimized: Collects all segments needing fallback and batches them together
-        instead of decoding each one individually (which destroys parallelism).
+        Walks the same temperature schedule as decode_with_fallback, but at each
+        step re-decodes only the segments that still fail, as one smaller batch.
         """
         kwargs = {**decode_options}
         kwargs.pop("beam_size", None)
         kwargs.pop("patience", None)
+        # best_of samples several sequences per segment, which DecodingTask only
+        # supports for a single segment
         kwargs.pop("best_of", None)
 
-        # First pass: decode all segments at temperature 0
-        options = DecodingOptions(**kwargs, temperature=0.0)
-        decode_results = model.decode(segment_batch, options)
+        n_segments = segment_batch.shape[0]
+        decode_results: List[Optional[DecodingResult]] = [None] * n_segments
+        pending = list(range(n_segments))
 
-        # Collect indices of segments needing fallback (instead of processing individually)
-        fallback_indices = []
-        for i, decode_result in enumerate(decode_results):
-            needs_fallback = False
-            if (
-                compression_ratio_threshold is not None
-                and decode_result.compression_ratio > compression_ratio_threshold
-            ):
-                needs_fallback = True
-            if (
-                logprob_threshold is not None
-                and decode_result.avg_logprob < logprob_threshold
-            ):
-                needs_fallback = True
-            if (
-                no_speech_threshold is not None
-                and decode_result.no_speech_prob > no_speech_threshold
-            ):
-                needs_fallback = False  # Silence, no fallback needed
-
-            if needs_fallback:
-                fallback_indices.append(i)
-
-        # Batch all fallback segments together (instead of individual decoding)
-        if fallback_indices:
-            # Stack all segments needing fallback into one batch
-            fallback_segments = mx.stack([segment_batch[i] for i in fallback_indices], axis=0)
-            fallback_options = DecodingOptions(**kwargs, temperature=1.0)
-            fallback_results = model.decode(fallback_segments, fallback_options)
-
-            # Ensure fallback_results is a list
-            if not isinstance(fallback_results, list):
-                fallback_results = [fallback_results]
-
-            # Update decode_results with fallback results
-            for idx, fallback_result in zip(fallback_indices, fallback_results):
-                decode_results[idx] = fallback_result
+        for t in temperatures:
+            batch = (
+                segment_batch
+                if len(pending) == n_segments
+                else segment_batch[mx.array(pending)]
+            )
+            results = model.decode(batch, DecodingOptions(**kwargs, temperature=t))
+            for i, result in zip(pending, results):
+                decode_results[i] = result
+            pending = [i for i, result in zip(pending, results) if needs_fallback(result)]
+            if not pending:
+                break
 
         return decode_results
 
