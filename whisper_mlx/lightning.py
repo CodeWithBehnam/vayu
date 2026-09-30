@@ -104,7 +104,9 @@ class LightningWhisperMLX:
             - temperature, compression_ratio_threshold, logprob_threshold
             - no_speech_threshold, condition_on_previous_text, initial_prompt
             - prepend_punctuations, append_punctuations, clip_timestamps
-            - hallucination_silence_threshold, fp16, beam_size, patience, etc.
+            - hallucination_silence_threshold (batch_size=1 only), fp16
+            - suppress_tokens, best_of (batch_size=1 only), etc.
+            Beam search (beam_size, patience) is not implemented.
 
         Returns
         -------
