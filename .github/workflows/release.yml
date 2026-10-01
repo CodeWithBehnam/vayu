@@ -1,10 +1,13 @@
 name: Release
 
-# Push a tag like v1.1.0 to build the package, create the GitHub release (notes
-# taken from that version's CHANGELOG.md section) and publish to PyPI.
+# Builds the package, creates the GitHub release (notes taken from that
+# version's CHANGELOG.md section) and publishes to PyPI. Start it either by
+# pushing a tag like v1.1.0, or with "Run workflow" on main, which tags the
+# current commit as v<version from pyproject.toml>.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,6 +15,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -19,13 +24,24 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Check the tag matches the package version
+      - name: Work out the release tag
+        id: tag
         run: |
           version=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match pyproject.toml version $version"
-            exit 1
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "::error::Run the release from main, not $GITHUB_REF"
+              exit 1
+            fi
+            tag="v$version"
+          else
+            tag="$GITHUB_REF_NAME"
+            if [ "$tag" != "v$version" ]; then
+              echo "::error::Tag $tag does not match pyproject.toml version $version"
+              exit 1
+            fi
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Build and check the distributions
         run: |
@@ -43,6 +59,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      TAG: ${{ needs.build.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -53,7 +71,7 @@ jobs:
 
       - name: Extract this version's notes from CHANGELOG.md
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${TAG#v}"
           awk -v heading="## [$version]" '
             /^## \[/ { if (found) exit; if (index($0, heading) == 1) { found = 1; next } }
             found { print }
@@ -63,15 +81,16 @@ jobs:
             exit 1
           fi
 
+      # Creates the tag at this commit when it doesn't exist yet (manual runs)
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+          gh release create "$TAG" dist/* \
+            --target "$GITHUB_SHA" --title "$TAG" --notes-file notes.md
 
   pypi:
-    needs: build
+    needs: github-release
     runs-on: ubuntu-latest
     # PyPI trusted publishing: the project must list this repository,
     # workflow (release.yml) and environment (pypi) as a trusted publisher.
