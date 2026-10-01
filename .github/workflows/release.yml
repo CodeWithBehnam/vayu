@@ -43,6 +43,18 @@ jobs:
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
+      # PyPI keeps each release's description for good, so point its images
+      # at this release's tag rather than at main, which moves on
+      - name: Pin README images to the release tag
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          sed -i "s#raw.githubusercontent.com/$GITHUB_REPOSITORY/main/#raw.githubusercontent.com/$GITHUB_REPOSITORY/$TAG/#g" README.md
+          if grep -q "raw.githubusercontent.com/$GITHUB_REPOSITORY/main/" README.md; then
+            echo "::error::README.md still links to main"
+            exit 1
+          fi
+
       - name: Build and check the distributions
         run: |
           python -m pip install build twine
