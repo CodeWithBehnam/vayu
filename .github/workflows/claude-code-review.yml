@@ -1,8 +1,11 @@
 name: Claude Code Review
 
+# Opt-in: runs only on pull requests labelled "claude-review", so a missing
+# or expired CLAUDE_CODE_OAUTH_TOKEN doesn't put a red check on every PR.
+# Adding the label starts a review; later pushes to the PR re-run it.
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
+    types: [opened, synchronize, ready_for_review, reopened, labeled]
     # Optional: Only run on specific file changes
     # paths:
     #   - "src/**/*.ts"
@@ -12,8 +15,12 @@ on:
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
+    if: >-
+      (github.event.action == 'labeled'
+      && github.event.label.name == 'claude-review')
+      || (github.event.action != 'labeled'
+      && contains(github.event.pull_request.labels.*.name, 'claude-review'))
+    # Optional: also filter by PR author by adding to the condition above, e.g.
     #   github.event.pull_request.user.login == 'external-contributor' ||
     #   github.event.pull_request.user.login == 'new-developer' ||
     #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
