@@ -74,7 +74,7 @@ from .speculative import (
     parallel_chunk_transcribe,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 __all__ = [
     # Main transcription function

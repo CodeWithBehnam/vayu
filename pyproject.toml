@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vayu-whisper"
-version = "1.0.0"
+version = "1.1.0"
 description = "The fastest Whisper speech-to-text on Apple Silicon. 3-5x faster transcription via MLX batched decoding on M1/M2/M3/M4 Macs."
 readme = "README.md"
 license = {text = "MIT"}
