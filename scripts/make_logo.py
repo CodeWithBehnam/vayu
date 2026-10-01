@@ -11,22 +11,29 @@ Usage:
     python scripts/make_logo.py
 
 Fonts are downloaded from Google Fonts (both are under the SIL Open Font
-License) into a cache directory on first run.
+License) into ~/.cache/vayu-logo-fonts, one file per font version, so a new
+upstream version is fetched rather than mixed with an old cached copy.
 """
 
+import math
+import os
 import pathlib
 import re
-import tempfile
 import urllib.request
 
 import uharfbuzz as hb
 from fontTools.pens.boundsPen import BoundsPen
 from fontTools.pens.svgPathPen import SVGPathPen
 from fontTools.pens.transformPen import TransformPen
+from fontTools.svgLib.path import parse_path
 from fontTools.ttLib import TTFont
 
 ASSETS = pathlib.Path(__file__).resolve().parent.parent / "assets"
-CACHE = pathlib.Path(tempfile.gettempdir()) / "vayu-logo-fonts"
+CACHE = (
+    pathlib.Path(os.environ.get("XDG_CACHE_HOME") or pathlib.Path.home() / ".cache")
+    / "vayu-logo-fonts"
+)
+TIMEOUT = 30  # seconds per request
 
 PALETTES = {
     # for light backgrounds
@@ -35,43 +42,81 @@ PALETTES = {
     "dark": dict(ink="#F1F5F9", a1="#2DD4BF", a2="#FB923C", muted="#8B949E"),
 }
 
-MARK = 88  # px; the mark is drawn on an 80-unit grid
-GAP = 20
+# the mark: three wind strokes on an 80-unit grid, as (palette colour, path)
+MARK_STROKES = [
+    ("a1", "M8 30 H52 A10 10 0 1 0 42 20"),
+    ("ink", "M8 48 H58 A8 8 0 1 1 50 56"),
+    ("a2", "M18 66 H36"),
+]
+MARK_SCALE, MARK_STROKE = 1.1, 7  # grid units -> px, stroke width in grid units
+GAP = 20  # px between the mark's ink and the text's ink
+MARGIN = 2  # px of space around all the ink
 WORD_SIZE, WORD_TRACKING = 54, 0.02  # px, em
 FA_SIZE, FA_GAP = 22, 10
 
 
+def num(v):
+    return f"{v:.2f}".rstrip("0").rstrip(".")
+
+
+def union(*boxes):
+    return (
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    )
+
+
+def mark_ink():
+    """Ink box of the mark in px: the strokes' centre lines plus half a stroke."""
+    pen = BoundsPen(None)
+    for _, d in MARK_STROKES:
+        parse_path(d, pen)
+    half = MARK_STROKE / 2
+    x0, y0, x1, y1 = pen.bounds
+    return tuple(v * MARK_SCALE for v in (x0 - half, y0 - half, x1 + half, y1 + half))
+
+
 def google_font(family: str, weight: int) -> pathlib.Path:
-    """Download a static TTF of `family` at `weight` (cached)."""
-    path = CACHE / f"{family.replace(' ', '')}-{weight}.ttf"
+    """Download a static TTF of `family` at `weight`, cached per font version."""
+    css_url = (
+        "https://fonts.googleapis.com/css2?family="
+        f"{family.replace(' ', '+')}:wght@{weight}"
+    )
+    css = urllib.request.urlopen(css_url, timeout=TIMEOUT).read().decode()
+    ttf_urls = re.findall(r"url\((https://fonts\.gstatic\.com/[^)]+\.ttf)\)", css)
+    if len(ttf_urls) != 1:
+        raise RuntimeError(
+            f"Expected one TTF for {family} {weight} from Google Fonts, got "
+            f"{len(ttf_urls)}; the CSS API may have changed:\n{css}"
+        )
+    # the URL path carries the font version (e.g. /s/manrope/v20/...)
+    path = CACHE / re.sub(r"[^A-Za-z0-9.]+", "-", ttf_urls[0].split("/s/", 1)[1])
     if not path.exists():
         CACHE.mkdir(parents=True, exist_ok=True)
-        css_url = (
-            "https://fonts.googleapis.com/css2?family="
-            f"{family.replace(' ', '+')}:wght@{weight}"
-        )
-        css = urllib.request.urlopen(css_url).read().decode()
-        ttf_url = re.search(
-            r"url\((https://fonts\.gstatic\.com/[^)]+\.ttf)\)", css
-        ).group(1)
-        path.write_bytes(urllib.request.urlopen(ttf_url).read())
+        data = urllib.request.urlopen(ttf_urls[0], timeout=TIMEOUT).read()
+        partial = path.with_suffix(".part")
+        partial.write_bytes(data)
+        os.replace(partial, path)  # never leave a truncated font in the cache
     return path
 
 
 class Text:
     """A shaped line of text, positioned in SVG pixels."""
 
-    def __init__(self, path, text, size, tracking=0.0, rtl=False, lang=None):
+    def __init__(self, path, text, size, tracking=0.0, lang=None):
         self.font = TTFont(path)
+        missing = [c for c in text if ord(c) not in self.font.getBestCmap()]
+        if missing:
+            raise RuntimeError(f"{path.name} has no glyphs for {missing!r}")
         hbfont = hb.Font(hb.Face(hb.Blob.from_file_path(str(path))))
         buf = hb.Buffer()
         buf.add_str(text)
-        buf.guess_segment_properties()
-        if rtl:
-            buf.direction, buf.script = "rtl", "Arab"
+        buf.guess_segment_properties()  # direction and script, e.g. RTL Arabic
         if lang:
             buf.language = lang
-        hb.shape(hbfont, buf, {"kern": True, "liga": True})
+        hb.shape(hbfont, buf)
 
         self.scale = size / self.font["head"].unitsPerEm
         order = self.font.getGlyphOrder()
@@ -102,9 +147,7 @@ class Text:
             )
 
     def path(self, left, baseline):
-        pen = SVGPathPen(
-            self.font.getGlyphSet(), ntos=lambda v: f"{v:.2f}".rstrip("0").rstrip(".")
-        )
+        pen = SVGPathPen(self.font.getGlyphSet(), ntos=num)
         self._draw(pen, left, baseline)
         return pen.getCommands()
 
@@ -121,31 +164,39 @@ class Text:
 
 def main():
     word = Text(google_font("Manrope", 800), "VAYU", WORD_SIZE, WORD_TRACKING)
-    persian = Text(google_font("Vazirmatn", 600), "وایو", FA_SIZE, rtl=True, lang="fa")
+    persian = Text(google_font("Vazirmatn", 600), "وایو", FA_SIZE, lang="fa")
 
-    column_top = (MARK - (WORD_SIZE + FA_GAP + FA_SIZE)) / 2
-    text_left = MARK + GAP
-    word_baseline = word.baseline_in_box(column_top, WORD_SIZE)
-    fa_baseline = persian.baseline_in_box(column_top + WORD_SIZE + FA_GAP, FA_SIZE)
-    fa_left = text_left + word.width - persian.width  # right-aligned under VAYU
+    # set the two lines at the origin, as CSS line boxes would stack them
+    word_baseline = word.baseline_in_box(0, WORD_SIZE)
+    fa_baseline = persian.baseline_in_box(WORD_SIZE + FA_GAP, FA_SIZE)
+    word_ink = word.bounds(0, word_baseline)
+    # right-align the visible letters (not the advance boxes) under VAYU
+    fa_left = word_ink[2] - persian.bounds(0, fa_baseline)[2]
+    text_ink = union(word_ink, persian.bounds(fa_left, fa_baseline))
 
-    width = round(text_left + word.width + 2)
-    # the frame must hold the mark and every glyph, descenders included
-    text_bottom = max(
-        word.bounds(text_left, word_baseline)[3],
-        persian.bounds(fa_left, fa_baseline)[3],
+    # put the text GAP px right of the mark's ink, centred on it vertically
+    mark = mark_ink()
+    dx = mark[2] + GAP - text_ink[0]
+    dy = (mark[1] + mark[3] - text_ink[1] - text_ink[3]) / 2
+    ink = union(
+        mark, (text_ink[0] + dx, text_ink[1] + dy, text_ink[2] + dx, text_ink[3] + dy)
     )
-    height = round(max(MARK, text_bottom + 2))
-    word_d = word.path(text_left, word_baseline)
-    fa_d = persian.path(fa_left, fa_baseline)
+
+    # then shift everything so the frame holds all the ink with MARGIN to spare
+    ox, oy = MARGIN - ink[0], MARGIN - ink[1]
+    width = math.ceil(ink[2] - ink[0] + 2 * MARGIN)
+    height = math.ceil(ink[3] - ink[1] + 2 * MARGIN)
+    word_d = word.path(dx + ox, word_baseline + dy + oy)
+    fa_d = persian.path(fa_left + dx + ox, fa_baseline + dy + oy)
 
     for mode, c in PALETTES.items():
+        strokes = "\n".join(
+            f'<path d="{d}" stroke="{c[colour]}"/>' for colour, d in MARK_STROKES
+        )
         svg = f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}" role="img" aria-labelledby="title">
 <title id="title">Vayu (وایو)</title>
-<g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="7" transform="scale({MARK / 80:g})">
-<path d="M8 30 H52 A10 10 0 1 0 42 20" stroke="{c["a1"]}"/>
-<path d="M8 48 H58 A8 8 0 1 1 50 56" stroke="{c["ink"]}"/>
-<path d="M18 66 H36" stroke="{c["a2"]}"/>
+<g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="{MARK_STROKE}" transform="translate({num(ox)} {num(oy)}) scale({MARK_SCALE:g})">
+{strokes}
 </g>
 <path d="{word_d}" fill="{c["ink"]}"/>
 <path d="{fa_d}" fill="{c["muted"]}"/>
